@@ -1,14 +1,17 @@
-"""审计引擎 CLI（SPEC 第 4 节，docs/PROMPTS.md 第 5/6 步）。
+"""审计引擎 CLI（SPEC 第 4 节，docs/PROMPTS.md 第 5/6/8 步）。
 
 用法：
     python -m auditor.cli samples/mail-helper            # 输出报告，存 reports/
     python -m auditor.cli samples/mail-helper --submit   # 并上链
+    python -m auditor.cli samples/mail-helper --llm      # 追加 LLM 一致性检查
 
 输出约定：
 - **stdout 只有报告 JSON**（UTF-8，`json.loads` 可直接解析）。
 - 非 JSON 的说明一律走 **stderr**：保存路径、reportHash、每笔广播交易哈希
-  （交易哈希在广播后立刻打印，超时也能拿去查链）。
-- `--llm`（第 8 步）**尚未实现**，传入会被拒绝。
+  （交易哈希在广播后立刻打印，超时也能拿去查链），以及错误信息。
+- `--llm` 在静态扫描之后**追加** `Finding` 并重算 `level`；LLM 失败时只在 stderr
+  打固定文案、stdout 保持为空并返回 2，**绝不上链、也不落盘**报告。
+- 不带 `--llm` 时完全不读 LLM 配置、不发任何请求。
 
 落盘（`auditor/storage.py`）：`<项目根>/reports/<0x报告哈希>.json`，内容是
 `canonical_json(report)` 的精确字节，因此 `keccak256(文件字节) == reportHash`。
@@ -18,18 +21,21 @@
 `--submit` 时先用 `Account.from_key(AUDITOR_PRIVATE_KEY).address` 替换零地址，
 再计算 reportHash（见 `auditor/submit.py`），报告字节与链上哈希因此一致。
 
-`project_root` 参数只用于测试注入（隔离 `.env` / `deployments.json` / `reports/`），
-`python -m auditor.cli` 不暴露对应开关，默认即仓库根目录。
+`project_root` 参数只用于测试注入（隔离 `.env` / `deployments.json` / `reports/` /
+`.cache/`），`python -m auditor.cli` 不暴露对应开关，默认即仓库根目录。
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from pathlib import Path
 
-from .report import Report, report_hash
+from .llm import LLMError, cache_root_for, check_consistency
+from .llm import load_config as load_llm_config
+from .report import Report, derive_level, report_hash
 from .scanner import scan_skill_report
 from .skill_dir import SkillDirError
 from .storage import REPORTS_DIRNAME, save_report
@@ -50,18 +56,22 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="把报告哈希提交到 SkillRegistry（需项目根 .env 与 deployments.json）",
     )
-    return parser
-
-
-def _parser_with_llm_placeholder() -> argparse.ArgumentParser:
-    """在正式参数之上声明 `--llm`，用于给出「尚未实现」的明确错误。"""
-    parser = build_parser()
-    parser.add_argument("--llm", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--llm",
+        action="store_true",
+        help="追加 LLM 描述/代码一致性检查（需 .env 的 LLM_API_KEY/LLM_BASE_URL/LLM_MODEL）",
+    )
     return parser
 
 
 def _hex_to_bytes(value: str) -> bytes:
     return bytes.fromhex(value[2:] if value.startswith("0x") else value)
+
+
+def _with_findings(report: Report, findings: list) -> Report:
+    """追加 findings 并重算 level；返回新对象（不就地改静态结论）。"""
+    merged = [*report.findings, *findings]
+    return dataclasses.replace(report, findings=merged, level=derive_level(merged))
 
 
 def _reports_dir(project_root: Path) -> Path:
@@ -70,12 +80,8 @@ def _reports_dir(project_root: Path) -> Path:
 
 def main(argv: list[str] | None = None, *, project_root: Path | None = None) -> int:
     root = Path(project_root) if project_root is not None else PROJECT_ROOT
-    parser = _parser_with_llm_placeholder()
+    parser = build_parser()
     args = parser.parse_args(argv)
-
-    if args.llm:
-        print("[错误] --llm（LLM 一致性检查）尚未实现，见 docs/PROMPTS.md 第 8 步", file=sys.stderr)
-        return 2
 
     try:
         report = scan_skill_report(args.skill_dir)
@@ -85,6 +91,23 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None) -> 
     except FileNotFoundError as exc:
         print(f"[错误] 找不到文件: {exc}", file=sys.stderr)
         return 2
+
+    if args.llm:
+        # 静态扫描通过后才做一致性检查；失败即中止，既不落盘也不上链。
+        try:
+            config = load_llm_config(root)
+            findings = check_consistency(args.skill_dir, report, config, cache_root_for(root))
+        except LLMError as exc:
+            print(f"[错误] LLM 一致性检查失败：{exc}", file=sys.stderr)
+            return 2
+        except Exception as exc:  # 兜底：只报类型，不回显异常原文
+            print(f"[错误] LLM 一致性检查失败（{type(exc).__name__}）", file=sys.stderr)
+            return 2
+        report = _with_findings(report, findings)
+        print(
+            f"[SkillGuard] LLM 一致性检查完成：追加 {len(findings)} 条命中 -> {report.level}",
+            file=sys.stderr,
+        )
 
     if args.submit:
         # 先设置真实审计者并保存，再广播；回执超时也保留报告。

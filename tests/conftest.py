@@ -28,7 +28,14 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 CLI_PROJECT_ENV = "SKILLGUARD_TEST_PROJECT"
-_CONFIG_ENV_VARS = ("RPC_URL", "AUDITOR_PRIVATE_KEY")
+_CONFIG_ENV_VARS = (
+    "RPC_URL",
+    "AUDITOR_PRIVATE_KEY",
+    # LLM_* 同理：开发机若导出了真实 key，子进程 `--llm` 测试可能真的外连计费。
+    "LLM_API_KEY",
+    "LLM_BASE_URL",
+    "LLM_MODEL",
+)
 _COPIED = ("auditor", "rules", "samples")
 
 
@@ -51,8 +58,8 @@ def isolated_cli_project(tmp_path_factory) -> Path:
             )
     previous = os.environ.get(CLI_PROJECT_ENV)
     os.environ[CLI_PROJECT_ENV] = str(project)
-    # 开发机上可能导出了 RPC_URL / AUDITOR_PRIVATE_KEY；`load_config` 会合并
-    # os.environ，子进程里必须清掉，否则 --submit 测试可能真的去连链。
+    # 开发机上可能导出了 RPC_URL / AUDITOR_PRIVATE_KEY / LLM_*；`load_config` 会合并
+    # os.environ，子进程里必须清掉，否则 --submit 测试可能真的去连链、--llm 真的去调 API。
     saved_values = {name: os.environ.pop(name) for name in _CONFIG_ENV_VARS if name in os.environ}
     yield project
     os.environ.update(saved_values)

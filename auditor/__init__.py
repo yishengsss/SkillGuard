@@ -1,7 +1,8 @@
 """SkillGuard 审计引擎（SPEC 第 4 节）。
 
-本步仅实现离线静态审计：metadata 规则、静态规则、仿冒包名、报告与 CLI。
-不含 LLM 一致性检查（--llm）、上链提交（--submit）与门禁。
+包含离线静态审计（metadata 规则、静态规则、仿冒包名）、报告与 CLI、
+上链提交（`--submit`，`auditor/submit.py`），以及可选的 LLM 一致性检查
+（`--llm`，`auditor/llm.py`）。安装门禁在 `gate/gate.py`。
 """
 
 from __future__ import annotations

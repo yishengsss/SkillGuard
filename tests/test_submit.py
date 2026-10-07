@@ -774,8 +774,8 @@ def test_cli_offline_does_not_require_config(tmp_path: Path, capsys, config_env)
     assert json.loads(capsys.readouterr().out)["skill"] == "weather"
 
 
-def test_cli_rejects_llm_flag() -> None:
-    """--llm（第 8 步）仍未实现，且不能被静默忽略。"""
+def test_cli_llm_flag_requires_configuration() -> None:
+    """--llm（第 8 步）已实现：隔离副本没有 LLM 配置，必须失败而非静默忽略。"""
     result = subprocess.run(
         [sys.executable, "-m", "auditor.cli", "samples/weather", "--llm"],
         cwd=cli_project_root(),
@@ -783,12 +783,13 @@ def test_cli_rejects_llm_flag() -> None:
         text=True,
     )
     assert result.returncode != 0
-    assert "--llm" in result.stderr
+    assert "unrecognized arguments" not in result.stderr
+    assert "LLM_API_KEY" in result.stderr
     assert result.stdout.strip() == ""
 
 
-def test_cli_submit_flag_is_documented_in_help() -> None:
-    """--submit 已被支持并由 argparse 声明（不再是未知参数）。"""
+def test_cli_flags_are_documented_in_help() -> None:
+    """--submit 与 --llm 都由 argparse 声明（不再是未知参数）。"""
     result = subprocess.run(
         [sys.executable, "-m", "auditor.cli", "--help"],
         cwd=cli_project_root(),
@@ -797,7 +798,7 @@ def test_cli_submit_flag_is_documented_in_help() -> None:
     )
     assert result.returncode == 0
     assert "--submit" in result.stdout
-    assert "--llm" not in result.stdout
+    assert "--llm" in result.stdout
 
 
 def test_cli_submit_without_config_fails_without_network() -> None:

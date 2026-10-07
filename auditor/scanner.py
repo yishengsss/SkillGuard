@@ -1,7 +1,8 @@
 """审计流程编排（SPEC 第 4 节检测阶段）。
 
 阶段：1 描述投毒（metadata）→ 2 静态扫描（static）→ 3 仿冒包名（package）。
-LLM 一致性（第 4 阶段）与上链提交不在本步范围。
+LLM 一致性（第 4 阶段）**不在这里**：它由 CLI 在静态扫描之后按需调用
+`auditor/llm.py`，再把结果追加进报告（见 `auditor/cli.py` 的 `--llm`）。
 
 `scan_skill()` 返回 **dict**（SPEC 结构的报告 JSON），便于 CLI 直接输出与哈希。
 需要 `Report` 对象时用 `scan_skill_report()`。

@@ -791,11 +791,13 @@ def test_cli_fifo_manifest_exits_nonzero_without_blocking(tmp_path: Path) -> Non
     assert result.stdout.strip() == ""
 
 
-def test_cli_rejects_llm_flag() -> None:
-    """--llm（第 8 步）仍未实现，不应被静默接受。"""
+def test_cli_llm_flag_requires_configuration() -> None:
+    """--llm（第 8 步）已实现：不再是未知参数，而是缺 LLM 配置而非零退出。"""
     result = _run_cli("samples/weather", "--llm")
     assert result.returncode != 0
-    assert "--llm" in result.stderr
+    assert result.stdout.strip() == ""
+    assert "unrecognized arguments" not in result.stderr
+    assert "LLM_API_KEY" in result.stderr
 
 
 def test_cli_submit_requires_configuration() -> None:
