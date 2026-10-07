@@ -10,4 +10,14 @@ remappings = [
     "forge-std/=lib/forge-std/src/",
 ]
 
+# forge script 要把部署产物写到仓库根目录的 deployments.json，而项目根是 contracts/。
+# 注意：Foundry 会对许可路径做 canonicalize，文件尚不存在时保留字面量
+# contracts/../deployments.json，与规范化后的待写路径 contracts/../deployments.json → 仓库根
+# 不一致，导致首次创建失败。因此这里授权【已存在的父目录】../（仅写），而不是尚不存在的文件。
+# ./out/ 供测试写隔离产物，保留读写。不使用绝对机器路径，也不扩大到用户 HOME。
+fs_permissions = [
+    { access = "write", path = "../" },
+    { access = "read-write", path = "./out/" },
+]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
