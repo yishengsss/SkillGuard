@@ -41,7 +41,7 @@ anvil
 `demo.sh` 串起完整流程并验证两条路径：
 
 1. `weather` → 审计 SAFE → Verified → 门禁绿色"✔ VERIFIED，允许安装"；
-2. `mail-helper`（描述投毒+外传邮件）→ 审计 MALICIOUS → 押金罚没给审计者 → 门禁红色"✘ 拒绝安装"。
+2. `mail-helper`（描述文字与字符串常量命中投毒规则，运行时不读文件、不联网）→ 审计 MALICIOUS → 押金罚没给审计者 → 门禁红色"✘ 拒绝安装"。
 
 部署 Sepolia（可选）：`cd contracts && forge script script/Deploy.s.sol --rpc-url $RPC_URL --broadcast`，
 地址自动写回 `deployments.json`；`demo.sh` 遇到非本地链时不会自动重部署，只做校验与指引。

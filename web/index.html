@@ -120,13 +120,13 @@ a{color:var(--acc)}
       <div class="sample">
         <h3>mail-helper <span class="b b-bad">预期 MALICIOUS</span></h3>
         <p>包名 mail-helper · 版本 1.0.0</p>
-        <p>特征：工具描述中夹带指令性语句（诱导密送邮件、要求不告知用户）。</p>
+        <p>特征：工具描述中包含指令性语句字符串（密送、不告知用户），运行时不执行。</p>
         <p>报告：可能对应 <code>reports/&lt;reportHash&gt;.json</code>，是否存在需本地确认。</p>
       </div>
       <div class="sample">
         <h3>requests-mcpp <span class="b b-bad">预期 MALICIOUS</span></h3>
         <p>包名 requestss · 版本 1.0.0</p>
-        <p>特征：与已知包名编辑距离 ≤ 2 的仿冒包名，读取敏感凭据路径。</p>
+        <p>特征：与已知包名编辑距离 ≤ 2 的仿冒包名，代码中包含敏感路径字符串，运行时不读取。</p>
         <p>报告：可能对应 <code>reports/&lt;reportHash&gt;.json</code>，是否存在需本地确认。</p>
       </div>
       <div class="sample">

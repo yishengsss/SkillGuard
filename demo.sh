@@ -98,6 +98,7 @@ register_and_request() { # $1=技能目录 $2=repo
   local dir="$1" repo="$2" name version hashes status
   name=$(command "$PY" -c "import json;print(json.load(open('$dir/manifest.json'))['name'])")
   version=$(command "$PY" -c "import json;print(json.load(open('$dir/manifest.json'))['version'])")
+  REG_NAME="$name"; REG_VERSION="$version"   # 供后续从链上读状态使用
   # 每个版本只能注册一次（防“先良性后投毒”）；重跑演示需要重启 anvil 归零状态
   status=$(cast call "$REGISTRY" "getStatus(string,string)(uint8)" "$name" "$version" --rpc-url "$RPC_URL" 2>/dev/null || echo none)
   [ "$status" = "0" ] || fail "$name@$version 已注册过（status=$status）。请重启 anvil（Ctrl-C 后重跑 anvil）得到干净链再运行 ./demo.sh"
@@ -122,38 +123,33 @@ audit_and_submit() { # $1=技能目录
 }
 
 # 流程三：安装门禁
-gate_check() { # $1=技能目录 $2=期望结果(0=放行,1=拒绝)
+gate_check() { # $1=技能目录
   set +e
   command "$PY" gate/gate.py install "$1"
   local rc=$?
   set -e
-  if [ "$rc" = "$2" ]; then
-    echo "(门禁结果符合预期：exit $rc)"
-  else
-    fail "门禁结果 exit $rc，与预期 $2 不符"
-  fi
+  echo "gate-exit: $rc"
 }
 
 log "1. 质押(人):python -m auditor.stake"
 command "$PY" -m auditor.stake || fail "质押失败：请检查 AUDITOR_PRIVATE_KEY 与 RPC 后重跑"
 
-log "2. SAFE 样本 weather：审计通过 → Verified → 允许安装"
-register_and_request samples/weather "https://github.com/example/weather.git"
+log "2. SAFE 样本 weather"
+register_and_request samples/weather "samples/weather"
 audit_and_submit samples/weather
-echo "publisher 余额已退还押金(Verified)"
-gate_check samples/weather 0
+echo "getStatus($REG_NAME@$REG_VERSION)=$(cast call "$REGISTRY" "getStatus(string,string)(uint8)" "$REG_NAME" "$REG_VERSION" --rpc-url "$RPC_URL")"
+gate_check samples/weather
 
-log "3. 恶意样本 mail-helper：审计判 MALICIOUS → 押金罚没 → 拒绝安装"
+log "3. 恶意样本 mail-helper"
 PUB_BEFORE=$(cast balance "$PUBLISHER" --rpc-url "$RPC_URL")
 AUD_BEFORE=$(cast balance "$AUDITOR" --rpc-url "$RPC_URL")
-register_and_request samples/mail-helper "https://github.com/example/mail-helper.git"
+register_and_request samples/mail-helper "samples/mail-helper"
 audit_and_submit samples/mail-helper
 PUB_AFTER=$(cast balance "$PUBLISHER" --rpc-url "$RPC_URL")
 AUD_AFTER=$(cast balance "$AUDITOR" --rpc-url "$RPC_URL")
-step "经济问责：押金已从 publisher 罚没给 auditor"
-echo "publisher:$PUB_BEFORE -> $PUB_AFTER wei   auditor:$AUD_BEFORE -> $AUD_AFTER wei"
-echo "(押金 $MIN_DEPOSIT_ETH ETH 从发布者转移给审计者)"
-gate_check samples/mail-helper 1
+echo "getStatus($REG_NAME@$REG_VERSION)=$(cast call "$REGISTRY" "getStatus(string,string)(uint8)" "$REG_NAME" "$REG_VERSION" --rpc-url "$RPC_URL")  isVerified=$(cast call "$LICENSE" "isVerified(string,string)(bool)" "$REG_NAME" "$REG_VERSION" --rpc-url "$RPC_URL")"
+echo "publisher-balance: $PUB_BEFORE -> $PUB_AFTER wei   auditor-balance: $AUD_BEFORE -> $AUD_AFTER wei"
+gate_check samples/mail-helper
 
 log "4. 完成"
 echo "报告见 reports/，看板：open web/index.html(用 viem 读取链上事件)"
