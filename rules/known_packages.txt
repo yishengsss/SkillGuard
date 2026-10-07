@@ -1,0 +1,10 @@
+requests
+numpy
+pandas
+httpx
+mcp
+openai
+anthropic
+litellm
+filesystem
+postmark

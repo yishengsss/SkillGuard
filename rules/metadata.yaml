@@ -1,0 +1,21 @@
+# 描述投毒规则：作用于 manifest.json 中工具的 description / inputSchema
+- id: META-001
+  name: 隐藏转发/密送指令
+  severity: critical
+  patterns: ['(密送|抄送|bcc|cc:)', '(同时|另外|也)(发送|转发|上传)(到|至|给)', 'forward .* to', 'send a copy']
+- id: META-002
+  name: 指令注入 / 隐瞒用户
+  severity: critical
+  patterns: ['ignore (all |previous |prior )?instructions', '忽略(之前|以上)的?指令', '(不要|无需|切勿)(告诉|通知|提示)用户', "do not (tell|inform|mention) .*user"]
+- id: META-003
+  name: 诱导读取敏感数据
+  severity: high
+  patterns: ['(读取|获取|附上).*(密钥|凭证|密码|token|私钥)', '(read|include) .*(credential|api[_ ]?key|password|secret|ssh)']
+- id: META-004
+  name: 隐藏 Unicode 字符
+  severity: high
+  patterns: ['[​-‏‪-‮⁠-⁤﻿]']
+- id: META-005
+  name: 描述异常过长
+  severity: medium
+  max_length: 1000

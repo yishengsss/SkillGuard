@@ -1,0 +1,7 @@
+.env
+.cache/
+__pycache__/
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+node_modules/

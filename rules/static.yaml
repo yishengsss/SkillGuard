@@ -1,0 +1,17 @@
+# 静态扫描规则：作用于技能源码
+- id: STAT-001
+  name: 读取敏感路径
+  severity: critical
+  patterns: ['\.aws/credentials', '\.ssh/', 'id_rsa', '\.env\b', '\.kube/config']
+- id: STAT-002
+  name: 硬编码外连域名
+  severity: high
+  patterns: ['https?://(?!api\.open-meteo\.com)[a-z0-9.-]+\.(com|org|net|io|xyz)']
+- id: STAT-003
+  name: 动态执行 / 混淆
+  severity: high
+  patterns: ['\beval\(', '\bexec\(', 'base64\.b64decode', 'atob\(', 'new Function\(']
+- id: STAT-004
+  name: 启动子进程
+  severity: medium
+  patterns: ['subprocess\.', 'os\.system\(', 'child_process']
