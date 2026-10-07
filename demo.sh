@@ -24,6 +24,9 @@ done
 [ -f .env ] || fail "根目录没有 .env。先 cp .env.example .env，填入 RPC_URL、PRIVATE_KEY、AUDITOR_PRIVATE_KEY"
 set -a; # shellcheck disable=SC1091
 source .env; set +a
+# 可用 DEMO_RPC_URL 临时覆盖 RPC（不改 .env），本地演示时传 http://127.0.0.1:8545
+: "${DEMO_RPC_URL:=}"
+[ -n "$DEMO_RPC_URL" ] && RPC_URL="$DEMO_RPC_URL"
 : "${RPC_URL:?请在 .env 里填 RPC_URL}"
 : "${PRIVATE_KEY:?请在 .env 里填 PRIVATE_KEY(发布者/部署者)}"
 : "${AUDITOR_PRIVATE_KEY:?请在 .env 里填 AUDITOR_PRIVATE_KEY(审计者)}"
