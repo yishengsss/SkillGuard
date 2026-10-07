@@ -5,3 +5,7 @@ contracts/out/
 contracts/cache/
 contracts/broadcast/
 node_modules/
+.venv/
+cache/
+reports/
+.DS_Store

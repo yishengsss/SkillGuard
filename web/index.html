@@ -1,0 +1,621 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SkillGuard 审计看板（只读）</title>
+<style>
+:root{
+  --bg:#f7f8fa; --fg:#1a1c1f; --muted:#5b6472; --line:#dfe3e8; --card:#fff; --acc:#1f4fd8;
+  --ok:#0a7a3d; --okbg:#e7f6ec; --bad:#b3261e; --badbg:#fdecea; --warn:#8a5a00; --warnbg:#fff6e5;
+  --none:#eef1f4; --nonefg:#4a5461;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+main{max-width:1100px;margin:0 auto;padding:22px 18px 60px}
+h1{font-size:22px;margin:0 0 6px}
+h2{font-size:16px;margin:0 0 12px}
+h3{font-size:14px;margin:0 0 6px}
+.sub{margin:0;color:var(--muted);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:16px 0}
+.muted{color:var(--muted);font-size:13px;margin:8px 0 0}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.conn{display:inline-block;margin:10px 0 0;padding:4px 10px;border-radius:999px;
+  font-size:13px;font-weight:600;background:var(--none);color:var(--nonefg)}
+.conn[data-s=pending]{background:var(--warnbg);color:var(--warn)}
+.conn[data-s=ok]{background:var(--okbg);color:var(--ok)}
+.conn[data-s=err]{background:var(--badbg);color:var(--bad)}
+.err{margin:10px 0 0;padding:10px 12px;border-radius:8px;background:var(--badbg);
+  color:var(--bad);font-size:13px;border:1px solid #f3c8c4;max-width:70ch}
+.err[hidden]{display:none}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;margin-bottom:12px}
+@media(max-width:640px){.grid{grid-template-columns:1fr}}
+label{display:block;font-size:13px;font-weight:600;color:#303840}
+input{width:100%;margin-top:4px;padding:7px 9px;font:inherit;font-size:13px;
+  border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--fg)}
+button{font:inherit;font-size:14px;font-weight:600;padding:8px 16px;border-radius:8px;
+  border:1px solid var(--acc);background:var(--acc);color:#fff;cursor:pointer}
+button[disabled]{opacity:.5;cursor:not-allowed}
+.copy{font-size:12px;font-weight:500;padding:2px 9px;border-radius:6px;
+  border:1px solid var(--line);background:#fff;color:var(--fg)}
+button:focus-visible,input:focus-visible,a:focus-visible,[tabindex]:focus-visible{
+  outline:2px solid var(--acc);outline-offset:2px}
+dl.cfg{margin:14px 0 0;font-size:13px;display:grid;grid-template-columns:auto 1fr;gap:5px 12px}
+dl.cfg dt{color:var(--muted)}
+dl.cfg dd{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;word-break:break-all}
+.stats{list-style:none;display:flex;flex-wrap:wrap;gap:10px;margin:0;padding:0}
+.stats li{flex:1 1 150px;border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.stat-n{display:block;font-size:22px;font-weight:700;line-height:1.2}
+.stat-l{display:block;font-size:12px;color:var(--muted);margin-top:2px}
+.scroll{overflow-x:auto;padding-bottom:2px}
+table{border-collapse:collapse;width:100%;min-width:840px;font-size:13px}
+caption{text-align:left;color:var(--muted);font-size:12px;padding-bottom:8px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;color:var(--muted);font-weight:600}
+tbody tr:last-child td{border-bottom:0}
+.b{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600;white-space:nowrap}
+.b-ok{background:var(--okbg);color:var(--ok)}
+.b-bad{background:var(--badbg);color:var(--bad)}
+.b-warn{background:var(--warnbg);color:var(--warn)}
+.b-none{background:var(--none);color:var(--nonefg)}
+.hash{word-break:break-all}
+.cell-actions{margin-top:4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+a{color:var(--acc)}
+.stale{opacity:.62}
+.samples{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+.sample{border:1px solid var(--line);border-radius:8px;padding:12px}
+.sample p{margin:4px 0;font-size:13px;color:var(--muted)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>SkillGuard 审计看板</h1>
+    <p class="sub">只读页面：仅读取链上 SkillRegistry / SkillLicense 事件与状态，不发送任何交易。<br>
+      连接状态：<span class="conn" id="conn" data-s="pending" role="status">正在初始化…</span></p>
+  </header>
+
+  <section class="card" aria-labelledby="cfg-h">
+    <h2 id="cfg-h">数据源与扫描范围</h2>
+    <div class="grid">
+      <div>
+        <label for="rpc">RPC 地址（仅本次会话内存使用，不写入 localStorage）</label>
+        <input id="rpc" type="url" spellcheck="false" autocomplete="off" value="http://127.0.0.1:18545" disabled>
+      </div>
+      <div>
+        <label for="fromBlock">扫描起始区块（默认为 0；范围过大时会提示改小）</label>
+        <input id="fromBlock" type="text" inputmode="numeric" value="0" autocomplete="off" disabled>
+      </div>
+    </div>
+    <button id="refresh" type="button" disabled>刷新链上数据</button>
+    <p class="muted">RPC 仅在点击刷新时用于读链；每次刷新都会重新校验链 ID、合约字节码并重新获取最新区块号。</p>
+    <div class="err" id="err" role="alert" hidden></div>
+    <dl class="cfg">
+      <dt>deployments.json chainId</dt><dd id="cfg-chain">—</dd>
+      <dt>SkillRegistry</dt><dd id="cfg-reg">—</dd>
+      <dt>SkillLicense</dt><dd id="cfg-lic">—</dd>
+      <dt>本次快照区块</dt><dd id="cfg-snap">—</dd>
+    </dl>
+  </section>
+
+  <section class="card" aria-labelledby="ov-h">
+    <h2 id="ov-h">概览（基于当前快照）</h2>
+    <ul class="stats stale">
+      <li><span class="stat-n" id="s-total">—</span><span class="stat-l">注册版本总数</span></li>
+      <li><span class="stat-n" id="s-verified">—</span><span class="stat-l">链上状态 Verified</span></li>
+      <li><span class="stat-n" id="s-malicious">—</span><span class="stat-l">链上状态 Malicious</span></li>
+      <li><span class="stat-n" id="s-pending">—</span><span class="stat-l">待审计（Registered / AuditRequested）</span></li>
+      <li><span class="stat-n" id="s-license">—</span><span class="stat-l">持有许可证（License）</span></li>
+    </ul>
+    <p class="muted" id="ov-note">尚未核实链上数据，请先点击刷新。</p>
+  </section>
+
+  <section class="card" aria-labelledby="sp-h">
+    <h2 id="sp-h">演示样本说明（静态，非链上结论）</h2>
+    <p class="muted">下列「预期等级」来自 SPEC 第 6 节的本地审计预期，与上表任何链上状态无关；两者不一致时以链上数据为准。</p>
+    <div class="samples">
+      <div class="sample">
+        <h3>mail-helper <span class="b b-bad">预期 MALICIOUS</span></h3>
+        <p>包名 mail-helper · 版本 1.0.0</p>
+        <p>特征：工具描述中夹带指令性语句（诱导密送邮件、要求不告知用户）。</p>
+        <p>报告：可能对应 <code>reports/&lt;reportHash&gt;.json</code>，是否存在需本地确认。</p>
+      </div>
+      <div class="sample">
+        <h3>requests-mcpp <span class="b b-bad">预期 MALICIOUS</span></h3>
+        <p>包名 requestss · 版本 1.0.0</p>
+        <p>特征：与已知包名编辑距离 ≤ 2 的仿冒包名，读取敏感凭据路径。</p>
+        <p>报告：可能对应 <code>reports/&lt;reportHash&gt;.json</code>，是否存在需本地确认。</p>
+      </div>
+      <div class="sample">
+        <h3>weather <span class="b b-ok">预期 SAFE</span></h3>
+        <p>包名 weather-mcp · 版本 1.0.0</p>
+        <p>特征：仅调用天气示例接口（weather.example.com），无敏感路径与外连异常。</p>
+        <p>报告：可能对应 <code>reports/&lt;reportHash&gt;.json</code>，是否存在需本地确认。</p>
+      </div>
+    </div>
+    <p class="muted">样本目录：<code>samples/mail-helper</code>、<code>samples/requests-mcpp</code>、<code>samples/weather</code>（位置为仓库内相对路径，未做任何网络请求）。</p>
+  </section>
+
+  <section class="card" aria-labelledby="tb-h">
+    <h2 id="tb-h">技能版本明细</h2>
+    <p class="muted">由链上 SkillRegistered 事件重建，不限于 samples 目录；状态与报告哈希在同一快照区块读取。</p>
+    <div class="scroll">
+      <table>
+        <caption id="tb-cap">等待加载链上数据。</caption>
+        <thead>
+          <tr><th scope="col">技能 ID</th><th scope="col">版本</th><th scope="col">状态</th>
+            <th scope="col">许可证</th><th scope="col">报告哈希</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+    <p class="muted">状态取自 SkillRegistry.skills(key)；许可证取自 SkillLicense.isVerified，均为同一快照区块。仅当链上状态为 Verified 且持有许可证时才显示「可用」。</p>
+  </section>
+
+  <p class="sr" id="live" role="status" aria-live="polite"></p>
+</main>
+
+<script type="module">
+const CHUNK = 2000n;          // 单次 getContractEvents 的最大区块跨度
+const MAX_SCAN = 100000n;     // 单次扫描允许的最大区块总数
+const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
+const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+
+const RPC_PRESET = {
+  31337: "http://127.0.0.1:18545",
+  11155111: "https://ethereum-sepolia-rpc.publicnode.com",
+};
+const VIEM_URL = "https://esm.sh/viem@2.38.0";
+
+// ABI 与 contracts/src/SkillRegistry.sol、SkillLicense.sol 精确对应
+const REGISTRY_ABI = [
+  { type: "event", name: "SkillRegistered", inputs: [
+    { name: "key", type: "bytes32", indexed: true },
+    { name: "publisher", type: "address", indexed: true },
+    { name: "skillId", type: "string", indexed: false },
+    { name: "version", type: "string", indexed: false },
+    { name: "repo", type: "string", indexed: false },
+    { name: "codeHash", type: "bytes32", indexed: false },
+    { name: "metadataHash", type: "bytes32", indexed: false } ] },
+  { type: "event", name: "ReportSubmitted", inputs: [
+    { name: "key", type: "bytes32", indexed: true },
+    { name: "auditor", type: "address", indexed: true },
+    { name: "isMalicious", type: "bool", indexed: false },
+    { name: "reportHash", type: "bytes32", indexed: false } ] },
+  { type: "function", name: "skills", stateMutability: "view",
+    inputs: [{ name: "", type: "bytes32" }],
+    outputs: [
+      { name: "publisher", type: "address" }, { name: "repo", type: "string" },
+      { name: "codeHash", type: "bytes32" }, { name: "metadataHash", type: "bytes32" },
+      { name: "deposit", type: "uint256" }, { name: "status", type: "uint8" },
+      { name: "reportHash", type: "bytes32" }, { name: "auditor", type: "address" } ] },
+];
+
+const LICENSE_ABI = [
+  { type: "function", name: "isVerified", stateMutability: "view",
+    inputs: [{ name: "skillId", type: "string" }, { name: "version", type: "string" }],
+    outputs: [{ name: "", type: "bool" }] },
+];
+
+const STATUS = ["None", "Registered", "AuditRequested", "Verified", "Malicious"];
+
+const $ = (id) => document.getElementById(id);
+const el = {
+  conn: $("conn"), err: $("err"), rpc: $("rpc"), from: $("fromBlock"), btn: $("refresh"),
+  cfgChain: $("cfg-chain"), cfgReg: $("cfg-reg"), cfgLic: $("cfg-lic"), cfgSnap: $("cfg-snap"),
+  total: $("s-total"), verified: $("s-verified"), malicious: $("s-malicious"),
+  pending: $("s-pending"), license: $("s-license"), note: $("ov-note"),
+  cap: $("tb-cap"), rows: $("rows"),
+};
+const cfg = { chainId: null, registry: null, license: null, addressesValid: false };
+
+let generation = 0;      // 竞态令牌：只有最新一次刷新能写入页面
+
+function setConn(text, state) {
+  el.conn.textContent = text;
+  el.conn.dataset.s = state;
+}
+function showError(text) {
+  el.err.textContent = text;
+  el.err.hidden = false;
+}
+function clearError() {
+  el.err.textContent = "";
+  el.err.hidden = true;
+}
+function setBusy(busy) {
+  el.btn.disabled = busy || !cfg.addressesValid;
+  el.rpc.disabled = busy;
+  el.from.disabled = busy;
+}
+function textCell(text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (cls) td.className = cls;
+  return td;
+}
+// 传入 [元素, 文本] 数组；对象键会把 DOM 节点都变成同一个字符串，故不用对象
+function setStats(pairs) {
+  for (const [node, v] of pairs) node.textContent = v;
+}
+function setStatsDash() {
+  setStats([[el.total, "—"], [el.verified, "—"], [el.malicious, "—"],
+    [el.pending, "—"], [el.license, "—"]]);
+}
+function fmtBlock(n) {
+  try { return n.toLocaleString("en-US"); } catch { return String(n); }
+}
+function shortAddr(a) {
+  return typeof a === "string" && ADDR_RE.test(a) ? a.slice(0, 10) + "…" + a.slice(-6) : "—";
+}
+function announce(msg) {
+  const live = $("live");
+  if (live) live.textContent = "";
+  if (live) live.textContent = msg;
+}
+async function copyHash(hash) {
+  try {
+    await navigator.clipboard.writeText(hash);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function loadConfig() {
+  const res = await fetch("../deployments.json", { cache: "no-store" });
+  if (!res.ok) throw new Error("config");
+  const data = await res.json();
+  const chainId = Number(data.chainId);
+  if (!Number.isInteger(chainId) || chainId <= 0) throw new Error("config");
+  if (!ADDR_RE.test(data.SkillRegistry || "") || !ADDR_RE.test(data.SkillLicense || "")) throw new Error("config");
+
+  cfg.chainId = chainId;
+  cfg.registry = data.SkillRegistry;
+  cfg.license = data.SkillLicense;
+  cfg.addressesValid = true;
+
+  el.cfgChain.textContent = String(chainId);
+  el.cfgReg.textContent = data.SkillRegistry;
+  el.cfgLic.textContent = data.SkillLicense;
+  el.rpc.value = RPC_PRESET[chainId] || "";
+  if (!RPC_PRESET[chainId]) {
+    el.rpc.placeholder = "该链无预置 RPC，必须显式填写 http(s) 地址";
+    showError("deployments.json 的 chainId 不在预置列表中（31337 / 11155111），请手动填写 RPC 后再刷新。");
+  }
+}
+
+// viem 为动态导入，CDN 失败只影响读链，不会让整页脚本停止执行
+let viemModule = null;
+async function loadViem() {
+  if (viemModule) return viemModule;
+  try {
+    viemModule = await import(VIEM_URL);
+  } catch {
+    throw new Error("load-deps");
+  }
+  return viemModule;
+}
+
+async function makeClient() {
+  const url = el.rpc.value.trim();
+  let ok = false;
+  try {
+    const parsed = new URL(url);
+    ok = parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    ok = false;
+  }
+  if (!ok) throw new Error("rpc-protocol"); // 出错时不把 URL 原文回显到页面
+  const { createPublicClient, http } = await loadViem();
+  return createPublicClient({ transport: http(url, { timeout: 20000, retryCount: 2, retryDelay: 800 }) });
+}
+
+function parseFromBlock() {
+  const raw = el.from.value.trim();
+  if (!/^\d+$/.test(raw)) throw new Error("from-block");
+  return BigInt(raw);
+}
+
+/// 从 fromBlock 到 snapshot 分段扫描，返回 {versions, reports}
+async function scanEvents(client, fromBlock, snapshot, token) {
+  const span = snapshot - fromBlock + 1n;
+  if (span > MAX_SCAN) throw new Error("range-too-large");
+
+  const versions = new Map();
+  let reports = 0;
+  let cursor = fromBlock;
+  while (cursor <= snapshot) {
+    if (token !== generation) throw new Error("cancelled");
+    const end = (cursor + CHUNK - 1n) > snapshot ? snapshot : cursor + CHUNK - 1n;
+    const registered = await client.getContractEvents({
+      address: cfg.registry, abi: REGISTRY_ABI, eventName: "SkillRegistered",
+      fromBlock: cursor, toBlock: end,
+    });
+    const submitted = await client.getContractEvents({
+      address: cfg.registry, abi: REGISTRY_ABI, eventName: "ReportSubmitted",
+      fromBlock: cursor, toBlock: end,
+    });
+    for (const log of registered) {
+      versions.set(log.args.key, {
+        key: log.args.key, skillId: log.args.skillId, version: log.args.version,
+        publisher: log.args.publisher, block: log.blockNumber, index: log.logIndex,
+      });
+    }
+    reports += submitted.length;
+    cursor = end + 1n;
+  }
+  const list = [...versions.values()].sort((a, b) =>
+    a.block === b.block ? a.index - b.index : (a.block < b.block ? -1 : 1));
+  return { list, reports };
+}
+
+/// 在同一 snapshot 区块读取每个版本的当前状态与许可证
+async function readStates(client, versions, snapshot) {
+  const rows = [];
+  for (const v of versions) {
+    const s = await client.readContract({
+      address: cfg.registry, abi: REGISTRY_ABI, functionName: "skills",
+      args: [v.key], blockNumber: snapshot,
+    });
+    const statusIndex = Number(s[5]);
+    const reportHash = s[6];
+    const licensed = await client.readContract({
+      address: cfg.license, abi: LICENSE_ABI, functionName: "isVerified",
+      args: [v.skillId, v.version], blockNumber: snapshot,
+    });
+    rows.push({
+      ...v, statusIndex,
+      status: STATUS[statusIndex] || "Unknown(" + statusIndex + ")",
+      reportHash: HASH_RE.test(reportHash || "") ? reportHash : "—",
+      licensed: Boolean(licensed),
+    });
+  }
+  return rows;
+}
+
+/// 状态徽标：只有 Verified + 许可证才可用；Verified 但无许可证显示缺许可证
+const STATUS_STYLE = { 1: "b-none", 2: "b-warn", 3: "b-ok", 4: "b-bad" };
+function badge(text, cls) {
+  const span = document.createElement("span");
+  span.className = "b " + cls;
+  span.textContent = text;
+  return span;
+}
+function statusBadge(row) {
+  return badge(STATUS[row.statusIndex] || "Unknown", STATUS_STYLE[row.statusIndex] || "b-none");
+}
+function licenseCell(row) {
+  const box = document.createElement("div");
+  if (row.licensed && row.statusIndex === 3) {
+    // 只有「链上 Verified 且持有许可证」才等于安装门禁会放行
+    box.appendChild(badge("有许可证 · 可用", "b-ok"));
+    return box;
+  }
+  if (row.statusIndex === 3) {
+    // 链上状态 Verified 但没铸许可证：不能显示为可用
+    box.appendChild(badge("缺许可证", "b-warn"));
+    const note = document.createElement("div");
+    note.className = "muted";
+    note.textContent = "状态为 Verified，但链上未铸许可证，不视为可用";
+    box.appendChild(note);
+    return box;
+  }
+  box.appendChild(badge("无", "b-none"));
+  if (row.licensed) {
+    // 有 NFT 但链上状态不是 Verified：以状态为准，不能当作可用
+    const note = document.createElement("div");
+    note.className = "muted";
+    note.textContent = "链上存在许可证，但状态不是 Verified（两者不一致），不视为可用";
+    box.appendChild(note);
+  }
+  return box;
+}
+function reportCell(row) {
+  const box = document.createElement("div");
+  const hash = document.createElement("code");
+  hash.className = "hash";
+  hash.textContent = row.reportHash;
+  box.appendChild(hash);
+
+  if (!HASH_RE.test(row.reportHash)) {
+    const none = document.createElement("div");
+    none.className = "muted";
+    none.textContent = "尚未提交审计报告";
+    box.appendChild(none);
+    return box;
+  }
+  const actions = document.createElement("div");
+  actions.className = "cell-actions";
+  const copy = document.createElement("button");
+  copy.type = "button";
+  copy.className = "copy";
+  copy.textContent = "复制哈希";
+  copy.setAttribute("aria-label", "复制 " + row.skillId + " " + row.version + " 的报告哈希");
+  copy.addEventListener("click", async () => {
+    const ok = await copyHash(row.reportHash);
+    copy.textContent = ok ? "已复制 ✓" : "复制失败";
+    setTimeout(() => { copy.textContent = "复制哈希"; }, 1600);
+    announce((ok ? "已复制报告哈希：" : "复制失败，请手动选择文本：") + row.skillId + " " + row.version);
+  });
+  actions.appendChild(copy);
+
+  // 报告文件按 reportHash 命名；这里只是本地相对路径提示，不校验文件是否存在
+  const link = document.createElement("a");
+  link.href = "../reports/" + row.reportHash.slice(2) + ".json";
+  link.textContent = "本地报告文件（若存在）";
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  actions.appendChild(link);
+  box.appendChild(actions);
+  return box;
+}
+
+function renderRows(rows) {
+  el.rows.replaceChildren();
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    const idCell = document.createElement("td");
+    idCell.textContent = row.skillId;
+    const idNote = document.createElement("div");
+    idNote.className = "muted";
+    idNote.textContent = "发布者 " + shortAddr(row.publisher) + " · 注册区块 " + fmtBlock(row.block);
+    idCell.appendChild(idNote);
+    tr.appendChild(idCell);
+    tr.appendChild(textCell(row.version));
+    const st = document.createElement("td");
+    st.appendChild(statusBadge(row));
+    tr.appendChild(st);
+    const lic = document.createElement("td");
+    lic.appendChild(licenseCell(row));
+    tr.appendChild(lic);
+    tr.appendChild(reportCell(row));
+    el.rows.appendChild(tr);
+  }
+}
+
+/// 清空页面数据，绝不把「已核实」的样子留给未核实状态
+function resetView(note) {
+  el.rows.replaceChildren();
+  el.cap.textContent = note;
+  setStatsDash();
+  el.note.textContent = note;
+  el.cfgSnap.textContent = "—（尚无快照）";
+  document.querySelectorAll("table, .stats").forEach((n) => n.classList.add("stale"));
+}
+
+/// 全部查询成功后才原子替换页面数据
+function renderSuccess(result, fromBlock, snapshot) {
+  document.querySelectorAll("table, .stats").forEach((n) => n.classList.remove("stale"));
+  renderRows(result.rows);
+  const c = { total: result.rows.length, verified: 0, malicious: 0, pending: 0, license: 0 };
+  for (const r of result.rows) {
+    if (r.statusIndex === 3) c.verified += 1;
+    else if (r.statusIndex === 4) c.malicious += 1;
+    else c.pending += 1;
+    if (r.licensed) c.license += 1;
+  }
+  setStats([[el.total, c.total], [el.verified, c.verified], [el.malicious, c.malicious],
+    [el.pending, c.pending], [el.license, c.license]]);
+  el.cap.textContent = "快照区块 " + fmtBlock(snapshot) + " · 扫描区间 " + fmtBlock(fromBlock) + "–" +
+    fmtBlock(snapshot) + " · 共 " + c.total + " 个注册版本 · 链上 ReportSubmitted 事件 " + result.reports + " 条";
+  el.note.textContent = "本页数字均来自区块 " + fmtBlock(snapshot) +
+    " 的快照读取，不是实时数据；再次刷新会重新取快照。";
+  el.cfgSnap.textContent = fmtBlock(snapshot) + "（快照，非实时）";
+}
+
+/// 刷新开始：保留旧数据但整体变暗，明确「正在读取、尚非新快照」
+function beginLoading() {
+  const hasRows = el.rows.childElementCount > 0;
+  document.querySelectorAll("table, .stats").forEach((n) => n.classList.add("stale"));
+  el.cfgSnap.textContent = "—（本次尚未取得快照）";
+  el.cap.textContent = hasRows
+    ? "正在读取链上数据…下方仍为上一次快照，可能已过期。"
+    : "正在读取链上数据，请稍候…";
+  if (hasRows) el.note.textContent = "正在读取链上数据，当前显示的是上一次快照。";
+}
+
+/// 失败时不把旧快照当新结果：显式标注数据过期
+function markStale(reason) {
+  const hasRows = el.rows.childElementCount > 0;
+  document.querySelectorAll("table, .stats").forEach((n) => n.classList.add("stale"));
+  el.cfgSnap.textContent = "—（本次未取得快照）";
+  if (hasRows) {
+    el.cap.textContent = "⚠ 本次刷新失败，以下为上一次成功快照的旧数据，可能已过期，不要当作最新状态。";
+    el.note.textContent = "⚠ 数据已过期（" + reason + "）。";
+  } else {
+    resetView("本次加载失败，未取得任何链上数据。");
+  }
+}
+
+const ERR_TEXT = {
+  "config": "无法读取或校验 deployments.json（缺少 chainId / 合约地址格式不正确）。",
+  "rpc-protocol": "RPC 地址必须是以 http:// 或 https:// 开头的 URL。",
+  "from-block": "扫描起始区块必须是非负十进制整数。",
+  "range-too-large": "扫描区间超过 " + MAX_SCAN + " 个区块上限，已停止读取而不是返回不完整结果。请把起始区块改大（例如直接填部署所在区块）后重试。",
+  "chain-mismatch": "RPC 节点的链 ID 与 deployments.json 不一致，已拒绝读取，避免读错链。",
+  "no-code": "该地址在当前链上没有合约字节码，可能未部署或 RPC 指向了错误网络。",
+  "cancelled": "本次刷新已被新的刷新请求取代，结果已丢弃。",
+};
+
+function errorText(err) {
+  if (err && err.message === "load-deps") {
+    return "viem 依赖加载失败（CDN 不可达或被拦截），页面无法读链；请检查网络后重新加载页面。";
+  }
+  if (err && ERR_TEXT[err.message]) return ERR_TEXT[err.message];
+  return "读取链上数据失败：请检查 RPC 是否可达、合约是否已部署，以及浏览器控制台的详细错误。";
+}
+
+async function refresh() {
+  generation += 1;
+  const token = generation;
+  clearError();
+  setBusy(true);
+  setConn("正在连接并读取链上数据…", "pending");
+  beginLoading();
+
+  try {
+    const fromBlock = parseFromBlock();          // 先校验输入，不合法就不连网
+    const client = await makeClient();
+
+    const chainId = await client.getChainId();
+    if (Number(chainId) !== cfg.chainId) throw new Error("chain-mismatch");
+
+    // 两个地址必须有合约字节码；缺少 getCode 说明 viem 版本不符合预期，直接报错而不是静默跳过
+    const getCode = typeof client.getCode === "function" ? client.getCode.bind(client) : null;
+    if (!getCode) throw new Error("load-deps");
+    for (const addr of [cfg.registry, cfg.license]) {
+      const code = await getCode({ address: addr });
+      if (!code || code === "0x") throw new Error("no-code");
+    }
+    if (token !== generation) throw new Error("cancelled");
+
+    const snapshot = await client.getBlockNumber();  // 单快照区块号
+    if (fromBlock > snapshot) throw new Error("from-block");
+
+    const { list, reports } = await scanEvents(client, fromBlock, snapshot, token);
+    const rows = await readStates(client, list, snapshot);
+    if (token !== generation) throw new Error("cancelled");
+
+    renderSuccess({ rows, reports }, fromBlock, snapshot);
+    setConn("已连接 · 只读快照已更新（未发送任何交易）", "ok");
+    announce("链上数据已更新，共 " + rows.length + " 个注册版本，快照区块 " + fmtBlock(snapshot));
+  } catch (err) {
+    if (token !== generation) return;
+    const reason = errorText(err);
+    markStale(reason);
+    showError(reason);
+    setConn("读取失败，数据不可用", "err");
+    announce("刷新失败：" + reason);
+  } finally {
+    if (token === generation) setBusy(false);
+  }
+}
+
+el.btn.addEventListener("click", () => { refresh(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.target === el.rpc || e.target === el.from) && !el.btn.disabled) {
+    e.preventDefault();
+    refresh();
+  }
+});
+
+(async function init() {
+  try {
+    await loadConfig();
+    resetView("尚未加载链上数据，点击「刷新链上数据」开始读取。");
+    setBusy(false);
+    setConn("配置已就绪 · 尚未连接（点击刷新读链）", "pending");
+  } catch {
+    cfg.addressesValid = false;
+    setBusy(true);
+    setConn("配置读取失败", "err");
+    resetView("未取得配置，页面未读取任何链上数据。");
+    showError("无法读取 ../deployments.json：请通过 HTTP 方式打开本页（例如在仓库根目录运行静态服务器），而不是用 file:// 直接打开。");
+  }
+})();
+</script>
+</body>
