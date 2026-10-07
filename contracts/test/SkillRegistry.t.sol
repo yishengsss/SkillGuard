@@ -3,8 +3,11 @@ pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {IERC721Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {SkillRegistry} from "../src/SkillRegistry.sol";
+import {SkillLicense} from "../src/SkillLicense.sol";
 
 /// @notice 恶意 publisher：收到退款时尝试重入 submitReport
 contract ReenteringAuditor {
@@ -42,8 +45,48 @@ contract ReenteringAuditor {
     }
 }
 
-/// @notice 拒收 ETH 的 publisher：用于覆盖 TransferFailed 分支
-contract NoReceivePublisher {
+/// @notice 在收到 NFT 的回调里尝试重入 submitReport 的恶意 publisher
+contract NftReentrantPublisher is IERC721Receiver {
+    SkillRegistry private immutable registry;
+    string public secondSkillId;
+    string public secondVersion;
+    bool public reentryAttempted;
+    bool public reentrySucceeded;
+
+    constructor(SkillRegistry registry_) {
+        registry = registry_;
+    }
+
+    function register(string calldata skillId, string calldata version) external {
+        registry.register(skillId, version, "https://example.org/repo", bytes32(uint256(1)), bytes32(uint256(2)));
+    }
+
+    function request(string calldata skillId, string calldata version) external payable {
+        registry.requestAudit{value: msg.value}(skillId, version);
+    }
+
+    function setReentryTarget(string calldata skillId, string calldata version) external {
+        secondSkillId = skillId;
+        secondVersion = version;
+    }
+
+    function onERC721Received(address, address, uint256, bytes calldata) external returns (bytes4) {
+        if (bytes(secondSkillId).length != 0 && !reentryAttempted) {
+            reentryAttempted = true;
+            try registry.submitReport(secondSkillId, secondVersion, false, bytes32(uint256(0xC0FFEE))) {
+                reentrySucceeded = true;
+            } catch {
+                reentrySucceeded = false;
+            }
+        }
+        return IERC721Receiver.onERC721Received.selector;
+    }
+
+    receive() external payable {}
+}
+
+/// @notice 既拒收 NFT 又拒收 ETH 的 publisher：覆盖 _safeMint 失败分支
+contract MintRejectingPublisher {
     SkillRegistry private immutable registry;
 
     constructor(SkillRegistry registry_) {
@@ -56,8 +99,28 @@ contract NoReceivePublisher {
     }
 }
 
+/// @notice 拒收 ETH 的 publisher：能收 NFT 但退款转账会失败，用于覆盖 TransferFailed 分支
+contract NoReceivePublisher is IERC721Receiver {
+    SkillRegistry private immutable registry;
+
+    constructor(SkillRegistry registry_) {
+        registry = registry_;
+    }
+
+    function registerAndRequest(string calldata skillId, string calldata version) external payable {
+        registry.register(skillId, version, "https://example.org/repo", bytes32(uint256(1)), bytes32(uint256(2)));
+        registry.requestAudit{value: msg.value}(skillId, version);
+    }
+
+    /// @dev 接收 NFT，否则 _safeMint 会先失败，path 走到 ERC721InvalidReceiver
+    function onERC721Received(address, address, uint256, bytes calldata) external pure returns (bytes4) {
+        return IERC721Receiver.onERC721Received.selector;
+    }
+}
+
 contract SkillRegistryTest is Test {
     SkillRegistry internal registry;
+    SkillLicense internal license;
 
     address internal owner = makeAddr("owner");
     address internal publisher = makeAddr("publisher");
@@ -76,6 +139,13 @@ contract SkillRegistryTest is Test {
 
     function setUp() public {
         registry = new SkillRegistry(owner);
+        license = new SkillLicense(owner);
+
+        // 部署顺序：两个合约先各自部署，再互相接线
+        vm.startPrank(owner);
+        registry.setSkillLicense(address(license));
+        license.setRegistry(address(registry));
+        vm.stopPrank();
 
         vm.deal(publisher, 100 ether);
         vm.deal(auditor, 100 ether);
@@ -432,7 +502,26 @@ contract SkillRegistryTest is Test {
         vm.expectRevert(SkillRegistry.TransferFailed.selector);
         registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
 
-        // 整笔交易回滚，状态与押金保持原样
+        // 整笔交易回滚：状态、押金、许可证全部保持原样
+        (,,,, uint256 deposit, SkillRegistry.Status status,,) = registry.skills(registry.keyOf(SKILL_ID, VERSION));
+        assertEq(uint8(status), uint8(SkillRegistry.Status.AuditRequested));
+        assertEq(deposit, MIN_DEPOSIT);
+        assertEq(license.totalMinted(), 0, "NFT minted before the failed refund must roll back too");
+        assertFalse(license.isVerified(SKILL_ID, VERSION));
+    }
+
+    /// @notice 不实现 onERC721Received 且拒收 ETH 的 publisher：铸造就会失败
+    function test_SubmitReport_SafeRevertsWhenPublisherCannotReceiveNFT() public {
+        MintRejectingPublisher stub = new MintRejectingPublisher(registry);
+        stub.registerAndRequest{value: MIN_DEPOSIT}(SKILL_ID, VERSION);
+        _stake(auditor);
+
+        // 该接收方拒收 NFT，_safeMint 失败 -> 整笔回滚，状态与押金不变
+        vm.prank(auditor);
+        vm.expectRevert(abi.encodeWithSelector(IERC721Errors.ERC721InvalidReceiver.selector, address(stub)));
+        registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+
+        assertEq(license.totalMinted(), 0);
         (,,,, uint256 deposit, SkillRegistry.Status status,,) = registry.skills(registry.keyOf(SKILL_ID, VERSION));
         assertEq(uint8(status), uint8(SkillRegistry.Status.AuditRequested));
         assertEq(deposit, MIN_DEPOSIT);
@@ -624,6 +713,150 @@ contract SkillRegistryTest is Test {
             uint8(SkillRegistry.Status.Registered),
             "new version must be re-audited (anti rug-pull)"
         );
+    }
+
+    /* ------------------------------------------------- 许可证接线 / 铸造 */
+
+    function test_SetSkillLicense_OnlyOwnerAndEmits() public {
+        SkillLicense fresh = new SkillLicense(owner);
+
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit SkillRegistry.SkillLicenseUpdated(address(license), address(fresh));
+
+        vm.prank(owner);
+        registry.setSkillLicense(address(fresh));
+
+        assertEq(registry.skillLicense(), address(fresh));
+
+        vm.prank(other);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, other));
+        registry.setSkillLicense(address(license));
+    }
+
+    function test_SetSkillLicense_RevertsOnZeroAddress() public {
+        vm.prank(owner);
+        vm.expectRevert(SkillRegistry.ZeroAddress.selector);
+        registry.setSkillLicense(address(0));
+    }
+
+    function test_SubmitReport_SafeMintsLicenseToPublisher() public {
+        bytes32 key = _registerAndRequest(publisher, SKILL_ID, VERSION);
+        _stake(auditor);
+
+        uint256 expectedTokenId = license.totalMinted() + 1;
+        vm.expectEmit(true, true, true, true, address(registry));
+        emit SkillRegistry.LicenseMinted(key, publisher, expectedTokenId);
+
+        vm.prank(auditor);
+        registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+
+        assertEq(license.ownerOf(expectedTokenId), publisher, "license minted to publisher, not auditor");
+        assertTrue(license.isVerified(SKILL_ID, VERSION));
+        assertEq(license.totalMinted(), 1);
+    }
+
+    function test_SubmitReport_SafeMintsAtMostOnePerVersion() public {
+        _registerAndRequest(publisher, SKILL_ID, VERSION);
+        _stake(auditor);
+
+        vm.prank(auditor);
+        registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+
+        // 状态已转 Verified，第二次提交被 InvalidStatus 拦下，因此不可能铸造两张
+        vm.prank(auditor);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                SkillRegistry.InvalidStatus.selector, SkillRegistry.Status.Verified, SkillRegistry.Status.AuditRequested
+            )
+        );
+        registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+
+        assertEq(license.totalMinted(), 1);
+    }
+
+    function test_SubmitReport_MaliciousDoesNotMint() public {
+        _registerAndRequest(publisher, SKILL_ID, VERSION);
+        _stake(auditor);
+
+        vm.prank(auditor);
+        registry.submitReport(SKILL_ID, VERSION, true, REPORT_HASH);
+
+        assertEq(license.totalMinted(), 0, "malicious verdict must not mint");
+        assertFalse(license.isVerified(SKILL_ID, VERSION));
+    }
+
+    function test_SubmitReport_SafeRevertsWhenLicenseNotWired() public {
+        SkillRegistry bare = new SkillRegistry(owner);
+        vm.deal(publisher, 10 ether);
+
+        vm.prank(publisher);
+        bare.register(SKILL_ID, VERSION, REPO, CODE_HASH, META_HASH);
+        vm.prank(publisher);
+        bare.requestAudit{value: MIN_DEPOSIT}(SKILL_ID, VERSION);
+        vm.prank(auditor);
+        bare.stakeAsAuditor{value: AUDITOR_STAKE}();
+
+        vm.prank(auditor);
+        vm.expectRevert(SkillRegistry.SkillLicenseNotSet.selector);
+        bare.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+
+        // 未接线时整笔回滚，状态与押金保持原样
+        assertEq(uint8(bare.getStatus(SKILL_ID, VERSION)), uint8(SkillRegistry.Status.AuditRequested));
+    }
+
+    function test_SubmitReport_MaliciousStillWorksWithoutLicenseWired() public {
+        SkillRegistry bare = new SkillRegistry(owner);
+        vm.deal(publisher, 10 ether);
+
+        vm.prank(publisher);
+        bare.register(SKILL_ID, VERSION, REPO, CODE_HASH, META_HASH);
+        vm.prank(publisher);
+        bare.requestAudit{value: MIN_DEPOSIT}(SKILL_ID, VERSION);
+        vm.prank(auditor);
+        bare.stakeAsAuditor{value: AUDITOR_STAKE}();
+
+        // 恶意路径不需要铸证，未接线也应能正常结算
+        vm.prank(auditor);
+        bare.submitReport(SKILL_ID, VERSION, true, REPORT_HASH);
+
+        assertEq(uint8(bare.getStatus(SKILL_ID, VERSION)), uint8(SkillRegistry.Status.Malicious));
+    }
+
+    function test_SubmitReport_SafeStillRefundsDepositWhenMinting() public {
+        _registerAndRequest(publisher, SKILL_ID, VERSION);
+        _stake(auditor);
+
+        uint256 publisherBefore = publisher.balance;
+        vm.prank(auditor);
+        registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+
+        assertEq(publisher.balance, publisherBefore + MIN_DEPOSIT, "deposit refunded alongside mint");
+    }
+
+    function test_SubmitReport_MintCallbackCannotReenter() public {
+        NftReentrantPublisher nasty = new NftReentrantPublisher(registry);
+        vm.deal(address(nasty), 10 ether);
+
+        // 受害者一：nasty 自己的版本，会成功铸证并触发回调
+        nasty.register("skill-a", VERSION);
+        nasty.request{value: MIN_DEPOSIT}("skill-a", VERSION);
+
+        // 目标二：回调里想抢先结算的另一个版本
+        _registerAndRequest(publisher, "skill-b", VERSION);
+        nasty.setReentryTarget("skill-b", VERSION);
+
+        _stake(auditor);
+        vm.prank(auditor);
+        registry.submitReport("skill-a", VERSION, false, REPORT_HASH);
+
+        assertTrue(nasty.reentryAttempted(), "onERC721Received should have tried to re-enter");
+        assertFalse(nasty.reentrySucceeded(), "nonReentrant must block reentry from the mint callback");
+        assertEq(uint8(registry.getStatus("skill-b", VERSION)), uint8(SkillRegistry.Status.AuditRequested));
+
+        // 外层调用正常完成，许可证已铸给 publisher
+        assertEq(uint8(registry.getStatus("skill-a", VERSION)), uint8(SkillRegistry.Status.Verified));
+        assertEq(license.totalMinted(), 1);
+        assertEq(license.ownerOf(1), address(nasty));
     }
 
     /* ------------------------------------------------- 常量 / 构造 */

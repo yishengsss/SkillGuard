@@ -4,10 +4,16 @@ pragma solidity ^0.8.24;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
+/// @notice SkillLicense 中供 SkillRegistry 调用的最小接口
+interface ISkillLicense {
+    function mint(address to, string calldata skillId, string calldata version, bytes32 reportHash)
+        external
+        returns (uint256 tokenId);
+}
+
 /// @title SkillRegistry
-/// @notice 第三方 MCP 技能版本的注册、审计请求、审计报告与押金结算登记表。
+/// @notice 第三方 MCP 技能版本的注册、审计请求、审计报告、押金结算与许可证铸造。
 ///         每个版本独立审计，新版本必须重新审计（防「先良性后投毒」）。
-/// @dev 本阶段只做登记与押金结算，不接入 SkillLicense(NFT)。
 contract SkillRegistry is Ownable, ReentrancyGuard {
     enum Status {
         None,
@@ -37,6 +43,9 @@ contract SkillRegistry is Ownable, ReentrancyGuard {
     /// @notice 审计者地址 => 累计质押额（可累加）
     mapping(address => uint256) public auditorStake;
 
+    /// @notice 唯一被授权铸造许可证的 SkillLicense 地址；由 owner 设置以解决部署顺序
+    address public skillLicense;
+
     event SkillRegistered(
         bytes32 indexed key,
         address indexed publisher,
@@ -50,6 +59,8 @@ contract SkillRegistry is Ownable, ReentrancyGuard {
     event ReportSubmitted(bytes32 indexed key, address indexed auditor, bool isMalicious, bytes32 reportHash);
     event DepositSlashed(bytes32 indexed key, address indexed publisher, address indexed auditor, uint256 amount);
     event AuditorSlashed(address indexed auditor, uint256 amount);
+    event SkillLicenseUpdated(address indexed previousLicense, address indexed newLicense);
+    event LicenseMinted(bytes32 indexed key, address indexed to, uint256 tokenId);
 
     error KeyAlreadyExists(bytes32 key);
     error UnknownKey(bytes32 key);
@@ -61,8 +72,25 @@ contract SkillRegistry is Ownable, ReentrancyGuard {
     error SelfAuditForbidden(address publisher);
     error NothingToSlash(address auditor);
     error TransferFailed();
+    error SkillLicenseNotSet();
+    error ZeroAddress();
 
     constructor(address initialOwner) Ownable(initialOwner) {}
+
+    /// @notice owner 设置/更新 SkillLicense 地址（部署顺序：两个合约都部署后再互相接线）
+    function setSkillLicense(address newSkillLicense) external onlyOwner {
+        if (newSkillLicense == address(0)) revert ZeroAddress();
+
+        address previous = skillLicense;
+        skillLicense = newSkillLicense;
+
+        emit SkillLicenseUpdated(previous, newSkillLicense);
+    }
+
+    /// @notice 供 SkillLicense 回读真实审计者；许可证不通过 mint 参数接收该值
+    function auditorOf(bytes32 key) external view returns (address) {
+        return skills[key].auditor;
+    }
 
     /// @notice 计算版本登记键
     function keyOf(string memory skillId, string memory version) public pure returns (bytes32) {
@@ -133,6 +161,10 @@ contract SkillRegistry is Ownable, ReentrancyGuard {
         // 禁止 publisher 用同一地址审计自己的技能（自审自过）
         if (msg.sender == s.publisher) revert SelfAuditForbidden(msg.sender);
 
+        bool mintLicense = !isMalicious;
+        // 安全结论必须铸证；未接线时在改动任何状态之前失败
+        if (mintLicense && skillLicense == address(0)) revert SkillLicenseNotSet();
+
         uint256 deposit = s.deposit;
         address publisher = s.publisher;
 
@@ -150,7 +182,14 @@ contract SkillRegistry is Ownable, ReentrancyGuard {
 
         emit ReportSubmitted(key, msg.sender, isMalicious, reportHash);
 
-        _sendValue(isMalicious ? msg.sender : publisher, deposit);
+        if (mintLicense) {
+            // 恶意结论不铸造；许可证的 auditor 由 SkillLicense 回读本合约取得
+            uint256 tokenId = ISkillLicense(skillLicense).mint(publisher, skillId, version, reportHash);
+            emit LicenseMinted(key, publisher, tokenId);
+            _sendValue(publisher, deposit);
+        } else {
+            _sendValue(msg.sender, deposit);
+        }
     }
 
     /// @notice owner 罚没审计者全部质押并转给 owner（演示用简化仲裁）
