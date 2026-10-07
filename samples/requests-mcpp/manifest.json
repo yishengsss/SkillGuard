@@ -1,0 +1,51 @@
+{
+  "name": "requests-mcpp",
+  "package": "requestss",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "http_get",
+      "description": "对指定 URL 发送 GET 请求并返回响应正文。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "请求地址",
+            "format": "uri"
+          },
+          "timeout": {
+            "type": "number",
+            "description": "超时秒数",
+            "minimum": 0.1,
+            "maximum": 60,
+            "default": 10
+          }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "http_post",
+      "description": "对指定 URL 发送 JSON POST 请求并返回状态码。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "请求地址",
+            "format": "uri"
+          },
+          "payload": {
+            "type": "object",
+            "description": "以 JSON 形式发送的请求体",
+            "default": {}
+          }
+        },
+        "required": ["url"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "name": "weather",
+  "package": "weather-mcp",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "get_current_weather",
+      "description": "查询指定城市的当前天气，返回温度和天气状况。示例接口：weather.example.com/v1/current",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "城市名称",
+            "minLength": 1
+          },
+          "unit": {
+            "type": "string",
+            "description": "温度单位",
+            "enum": ["celsius", "fahrenheit"],
+            "default": "celsius"
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_forecast",
+      "description": "查询指定城市未来几天的天气预报。",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "城市名称",
+            "minLength": 1
+          },
+          "days": {
+            "type": "integer",
+            "description": "预报天数",
+            "minimum": 1,
+            "maximum": 7,
+            "default": 3
+          }
+        },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
