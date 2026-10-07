@@ -240,7 +240,9 @@ def snapshot() -> dict:
                 "repo": str(args["repo"]),
                 "status": STATUS_NAMES.get(status, f"Unknown({status})"),
                 "statusCode": status,
-                "auditor": display_name(auditor_addr, roles) if (auditor_addr := str(state[7])) and auditor_addr != ZERO_ADDR else "—",
+                # 审计者显示真实链上地址（未审计=零地址 → "—"），不做角色名替换
+                "auditor": (auditor_addr if auditor_addr != ZERO_ADDR else "—"),
+                "auditorFull": auditor_addr,
                 "licensed": bool(lic.functions.isVerified(skill, version).call()) if has_code else False,
                 "block": int(entry["blockNumber"]),
             }
