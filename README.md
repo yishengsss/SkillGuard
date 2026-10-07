@@ -17,7 +17,7 @@ AI Agent 技能供应链的安全审计市场：企业安装第三方 MCP 技能
 | 目录 | 作用 |
 |---|---|
 | `contracts/` | Foundry 项目：SkillRegistry（注册/审计/罚没）、SkillLicense（ERC-721 许可证） |
-| `auditor/`   | Python 审计引擎（`python -m auditor.cli`），支持 `--submit` 上链与 `--llm` 一致性检查 |
+| `auditor/`   | Python 审计引擎（`python -m auditor.cli`），四段式流水线：描述投毒/静态扫描/仿冒包名 + 可选 `--sandbox`（插桩动态分析，方案书 3.5.2）与 `--llm` 一致性 |
 | `gate/`      | `gate/gate.py` 安装门禁（只读查链，不执行技能代码） |
 | `rules/`     | YAML 检测规则 + 仿冒包名清单（公共物品） |
 | `samples/`   | 演示样本：weather(SAFE)、mail-helper(MALICIOUS)、requests-mcpp(MALICIOUS) |
@@ -50,9 +50,10 @@ anvil
 
 ```bash
 cd contracts && forge test -vv            # 合约测试（103 个）
-pytest -q                                  # Python 测试（258 个）
+pytest -q                                  # Python 测试（266 个）
 python -m auditor.cli samples/weather      # 离线审计，报告存 reports/
 python -m auditor.cli samples/weather --submit   # 并上链提交
+python -m auditor.cli samples/weather --sandbox  # 追加沙箱动态分析（可选阶段，零真实外连）
 python -m auditor.cli samples/weather --llm      # 追加 LLM 一致性检查（可缓存）
 python gate/gate.py install samples/weather      # 安装门禁
 ```

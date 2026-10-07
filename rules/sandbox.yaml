@@ -1,0 +1,24 @@
+# 沙箱动态分析规则：作用于沙箱内插桩捕获的行为事件（auditor/sandbox.py）。
+# 证据行由沙箱 harness 生成，格式固定：
+#   egress host=<域名> port=<端口>        # 尝试建立 TCP 连接（一律被阻断）
+#   spawn argv=<argv 列表 repr>           # 尝试启动子进程（被阻断）
+#   open path=<路径> mode=<模式>          # 打开文件；命中敏感路径模式时被阻断
+#   env key=<环境变量名>                  # 读取环境变量
+#   module <相对路径>                     # 成功导入技能模块
+#   tool <工具名>                         # 调用 manifest 声明的工具函数
+- id: DYN-001
+  name: 实际外连非保留域名
+  severity: critical
+  patterns: ['egress host=(?![a-z0-9.-]*example\.(com|org|net|io))(?!localhost)(?!127\.0\.0\.1)']
+- id: DYN-002
+  name: 实际启动子进程
+  severity: medium
+  patterns: ['\bspawn argv=']
+- id: DYN-003
+  name: 实际读取敏感路径
+  severity: critical
+  patterns: ['open path=(.*\.aws/credentials|.*\.aws/config|.*\.ssh/|.*id_rsa|.*\.env\b|.*\.kube/config)']
+- id: DYN-004
+  name: 实际读取凭证类环境变量
+  severity: high
+  patterns: ['env key=(.*credential.*|.*token.*|.*secret.*|.*password.*|.*aws.*|.*api_key.*)']
