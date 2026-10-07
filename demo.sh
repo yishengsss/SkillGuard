@@ -38,6 +38,14 @@ PUBLISHER=$(cast wallet address --private-key "$PRIVATE_KEY")
 AUDITOR=$(cast wallet address --private-key "$AUDITOR_PRIVATE_KEY")
 [ "$PUBLISHER" != "$AUDITOR" ] || fail "PRIVATE_KEY 与 AUDITOR_PRIVATE_KEY 是同一地址，合约要求 publisher != auditor"
 
+# 三钱包分离（SPEC 第 10 节）：缺 OWNER_PRIVATE_KEY 提示补配置
+if [ -z "${OWNER_PRIVATE_KEY:-}" ]; then
+  fail "缺 OWNER_PRIVATE_KEY（管理员，部署合约 & slashAuditor）。请在 .env 按角色补三个私钥（参照 .env.example）"
+fi
+OWNER=$(cast wallet address --private-key "$OWNER_PRIVATE_KEY")
+[ "$OWNER" != "$PUBLISHER" ] || fail "OWNER_PRIVATE_KEY 与 PRIVATE_KEY 相同（第 10 节要求三钱包两两不同）"
+[ "$OWNER" != "$AUDITOR" ] || fail "OWNER_PRIVATE_KEY 与 AUDITOR_PRIVATE_KEY 相同（第 10 节要求三钱包两两不同）"
+
 log "0. 连接链并保证部署可用"
 cast chain-id --rpc-url "$RPC_URL" >/dev/null 2>&1 \
   || fail "连不上 RPC_URL=$RPC_URL(本地演示请先另开终端运行 anvil)"
@@ -57,20 +65,20 @@ case "$RPC_URL" in
 esac
 
 if [ "$IS_LOCAL" = "yes" ]; then
-  for addr in "$PUBLISHER" "$AUDITOR"; do
+  for addr in "$PUBLISHER" "$AUDITOR" "$OWNER"; do
     [ "$(cast balance "$addr" --rpc-url "$RPC_URL" 2>/dev/null || echo 0)" -gt 1000000000000000000 ] \
       || cast rpc anvil_setBalance "$addr" 0x1BC16D674EC80000 --rpc-url "$RPC_URL" >/dev/null   # 2 ETH
   done
   if [ "$DEPLOYED_CHAIN" != "$CHAIN_ID" ] || [ -z "$ONCHAIN_CODE" ] || [ "$ONCHAIN_CODE" = "0x" ]; then
-    step "本地链与 deployments.json 不匹配，重新部署"
-    (cd contracts && forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast)
+    step "本地链与 deployments.json 不匹配，用管理员钱包重新部署（SPEC 第 7 节）"
+    (cd contracts && PRIVATE_KEY="$OWNER_PRIVATE_KEY" forge script script/Deploy.s.sol --rpc-url "$RPC_URL" --broadcast)
     REGISTRY=$(command "$PY" -c 'import json;print(json.load(open("deployments.json"))["SkillRegistry"])')
     LICENSE=$(command "$PY" -c 'import json;print(json.load(open("deployments.json"))["SkillLicense"])')
   fi
 else
   if [ "$DEPLOYED_CHAIN" != "$CHAIN_ID" ] || [ -z "$ONCHAIN_CODE" ] || [ "$ONCHAIN_CODE" = "0x" ]; then
-    fail "deployments.json 与链 $CHAIN_ID 不匹配。请先部署并提交地址：
-  cd contracts && forge script script/Deploy.s.sol --rpc-url \"\$RPC_URL\" --broadcast"
+    fail "deployments.json 与链 $CHAIN_ID 不匹配。请先用管理员钱包部署并提交地址：
+  cd contracts && PRIVATE_KEY=\"\$OWNER_PRIVATE_KEY\" forge script script/Deploy.s.sol --rpc-url \"\$RPC_URL\" --broadcast"
   fi
 fi
 echo "chainId      : $CHAIN_ID"
@@ -78,6 +86,7 @@ echo "SkillRegistry: $REGISTRY"
 echo "SkillLicense : $LICENSE"
 echo "publisher    : $PUBLISHER"
 echo "auditor      : $AUDITOR"
+echo "owner        : $OWNER（链上读取 owner()=$(cast call "$REGISTRY" "owner()(address)" --rpc-url "$RPC_URL")）"
 
 MIN_DEPOSIT=$(cast call "$REGISTRY" "MIN_DEPOSIT()(uint256)" --rpc-url "$RPC_URL")   # wei
 MIN_DEPOSIT=${MIN_DEPOSIT%% *}   # cast 对整数也会带人类可读后缀，如 “10000000000000000 [1e16]”，只留原值
@@ -125,13 +134,16 @@ gate_check() { # $1=技能目录 $2=期望结果(0=放行,1=拒绝)
   fi
 }
 
-log "1. SAFE 样本 weather：审计通过 → Verified → 允许安装"
+log "1. 质押(人):python -m auditor.stake"
+command "$PY" -m auditor.stake || fail "质押失败：请检查 AUDITOR_PRIVATE_KEY 与 RPC 后重跑"
+
+log "2. SAFE 样本 weather：审计通过 → Verified → 允许安装"
 register_and_request samples/weather "https://github.com/example/weather.git"
 audit_and_submit samples/weather
 echo "publisher 余额已退还押金(Verified)"
 gate_check samples/weather 0
 
-log "2. 恶意样本 mail-helper：审计判 MALICIOUS → 押金罚没 → 拒绝安装"
+log "3. 恶意样本 mail-helper：审计判 MALICIOUS → 押金罚没 → 拒绝安装"
 PUB_BEFORE=$(cast balance "$PUBLISHER" --rpc-url "$RPC_URL")
 AUD_BEFORE=$(cast balance "$AUDITOR" --rpc-url "$RPC_URL")
 register_and_request samples/mail-helper "https://github.com/example/mail-helper.git"
@@ -143,5 +155,5 @@ echo "publisher:$PUB_BEFORE -> $PUB_AFTER wei   auditor:$AUD_BEFORE -> $AUD_AFTE
 echo "(押金 $MIN_DEPOSIT_ETH ETH 从发布者转移给审计者)"
 gate_check samples/mail-helper 1
 
-log "3. 完成"
+log "4. 完成"
 echo "报告见 reports/，看板：open web/index.html(用 viem 读取链上事件)"
