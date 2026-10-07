@@ -75,7 +75,22 @@ python -m auditor.stake                         # 人：为审计者质押（押
 python -m auditor.agent [--once] [--from-block N] [--poll 秒]   # 常驻审计 Agent
 python gate/gate.py install samples/weather     # 安装门禁（人机界面）
 python gate/mcp_server.py                       # 安装方 Agent 的 MCP 工具（stdio）
+.venv/bin/python ops/server.py                  # 网页操作台 http://127.0.0.1:8765（仅本机）
 ```
+
+## 网页操作台（ops/）
+
+`.venv/bin/python ops/server.py` 打开后是一个人可操作的主流程界面（仅绑定 127.0.0.1，本地演示；**不是公共物品**——服务端用 .env 的三把私钥代表"人"签名交易，不要部署到公网）：
+
+- 面板：角色地址/余额/质押/MIN_DEPOSIT/区块/游标，全部实时读链；
+- 管理员：部署（仅本地链，写回 deployments.json）；
+- 人：质押审计者（复用 auditor.stake）；
+- 发布者：对 samples 下任一样本"注册 + 请求审计"（押金与哈希服务端实时求得）；
+- 审计 Agent：跑一轮（复用 auditor.agent，SAFE/MALICIOUS 自动上链，SUSPICIOUS 落 reports/pending/）；
+- SUSPICIOUS 待裁决：读 reports/pending/，一键"裁决 safe | malicious"（humanDecision 计入 reportHash 后上链）；
+- 安装方 Agent：调 gate MCP 的 `install_skill`（查链→复制→复检副本）。
+
+失败即拒绝并显示原因；页面上任何判定与数值都来自链上/真实交易回执，无写死值。
 
 Agent 的代码来源只支持本地路径（`repo` 字段为 `SKILL_SOURCE_ROOT`（默认项目根）内的
 相对路径或 `file://` 绝对路径）；**不 import、不执行技能代码**；不调用 LLM。
