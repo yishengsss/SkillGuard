@@ -102,6 +102,31 @@ SKILL_REGISTRY_ABI: list[dict[str, Any]] = [
         ],
         "outputs": [],
     },
+    # 审计 Agent 需要 SkillRegistered / AuditRequested 事件 ABI（auditor/agent.py）
+    {
+        "type": "event",
+        "anonymous": False,
+        "name": "SkillRegistered",
+        "inputs": [
+            {"name": "key", "type": "bytes32", "indexed": True},
+            {"name": "publisher", "type": "address", "indexed": True},
+            {"name": "skillId", "type": "string", "indexed": False},
+            {"name": "version", "type": "string", "indexed": False},
+            {"name": "repo", "type": "string", "indexed": False},
+            {"name": "codeHash", "type": "bytes32", "indexed": False},
+            {"name": "metadataHash", "type": "bytes32", "indexed": False},
+        ],
+    },
+    {
+        "type": "event",
+        "anonymous": False,
+        "name": "AuditRequested",
+        "inputs": [
+            {"name": "key", "type": "bytes32", "indexed": True},
+            {"name": "publisher", "type": "address", "indexed": True},
+            {"name": "deposit", "type": "uint256", "indexed": False},
+        ],
+    },
 ]
 
 STATUS_AUDIT_REQUESTED = 2

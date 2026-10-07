@@ -670,6 +670,8 @@ def test_contract_for_uses_minimal_abi() -> None:
         "auditorStake",
         "stakeAsAuditor",
         "submitReport",
+        "SkillRegistered",  # 审计 Agent 需要（A4）
+        "AuditRequested",  # 审计 Agent 需要（A4）
     }
 
 
