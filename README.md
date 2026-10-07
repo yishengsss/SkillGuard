@@ -29,7 +29,7 @@ AI Agent 技能供应链的安全审计市场：企业安装第三方 MCP 技能
 
 ```bash
 # 前置：Foundry（cast/anvil/forge）、Python 3.11
-cp .env.example .env   # 填 RPC_URL / PRIVATE_KEY(发布者) / AUDITOR_PRIVATE_KEY(审计者)
+cp .env.example .env   # 填 RPC_URL / PRIVATE_KEY(发布者) / AUDITOR_PRIVATE_KEY(审计者) / OWNER_PRIVATE_KEY(管理员)
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 
 # 另开一个终端跑本地链（演示默认用本地 anvil，友好无 gas 成本）
@@ -50,12 +50,31 @@ anvil
 
 ```bash
 cd contracts && forge test -vv            # 合约测试（103 个）
-pytest -q                                  # Python 测试（258 个）
+pytest -q                                  # Python 测试
 python -m auditor.cli samples/weather      # 离线审计，报告存 reports/
 python -m auditor.cli samples/weather --submit   # 并上链提交
 python -m auditor.cli samples/weather --llm      # 追加 LLM 一致性检查（可缓存）
-python gate/gate.py install samples/weather      # 安装门禁
+python -m auditor.stake                    # 人：为审计者质押（押钱担保）
+python -m auditor.agent [--once]           # 常驻审计 Agent
+python gate/gate.py install samples/weather      # 安装门禁（人机界面）
+python gate/mcp_server.py                  # 安装方 Agent 的 MCP 工具（stdio）
 ```
+
+## 安装方 Agent（demo-agent/）
+
+任何支持 MCP 的 Agent 都能在安装前调用 SkillGuard 门禁工具：
+
+| 工具 | 行为 |
+|---|---|
+| `check_skill(skill_dir)` | 查链上审计状态与许可证，比对本地与链上 codeHash/metadataHash |
+| `install_skill(skill_dir)` | 只在链上允许时复制到 `installed/<name>-<version>/`，复制后对副本重算哈希再核对一次 |
+
+启动方式：在 `demo-agent/` 目录里启动一个真实 Agent（例如 Claude Code，`.mcp.json`
+已登记 `gate/mcp_server.py`），用自然语言让它"安装 ../samples/weather"。
+
+**局限（SPEC 9.3，如实说明）：** Agent 是被 `demo-agent/CLAUDE.md` 这份规则**配置成**
+安装前调用 `install_skill` 的；这不是平台级的强制安装钩子——若 Agent 用别的工具直接
+复制文件，本系统拦不住。强制钩子属于路线图（SPEC 11.3）。
 
 ## 安全边界
 

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "skillguard-gate": {
+      "command": "python",
+      "args": ["../gate/mcp_server.py"],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
+    }
+  }
+}
