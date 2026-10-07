@@ -26,6 +26,7 @@ from auditor.report import canonical_json, report_hash
 from auditor.rules import load_rules
 from auditor.scanner import scan_skill
 from auditor.skill_dir import SkillDirError, safe_read_bytes, safe_read_text
+from conftest import cli_project_root
 
 ROOT = Path(__file__).resolve().parents[1]
 SAMPLES = ROOT / "samples"
@@ -682,9 +683,13 @@ def test_report_hash_matches_keccak_of_canonical() -> None:
 # 14. CLI：JSON 可解析、字段齐全
 # --------------------------------------------------------------------------
 def _run_cli(*args: str) -> subprocess.CompletedProcess:
+    """在隔离的项目副本里跑 CLI（报告写入副本的 reports/，不污染仓库）。
+
+    隔离目录由 tests/conftest.py 的 `isolated_cli_project` fixture 提供。
+    """
     return subprocess.run(
         [sys.executable, "-m", "auditor.cli", *args],
-        cwd=ROOT,
+        cwd=cli_project_root(),
         capture_output=True,
         text=True,
     )
@@ -786,7 +791,16 @@ def test_cli_fifo_manifest_exits_nonzero_without_blocking(tmp_path: Path) -> Non
     assert result.stdout.strip() == ""
 
 
-def test_cli_does_not_accept_llm_or_submit_flags_yet() -> None:
-    """本步不实现 --llm / --submit，不应被静默接受。"""
-    assert _run_cli("samples/weather", "--llm").returncode != 0
-    assert _run_cli("samples/weather", "--submit").returncode != 0
+def test_cli_rejects_llm_flag() -> None:
+    """--llm（第 8 步）仍未实现，不应被静默接受。"""
+    result = _run_cli("samples/weather", "--llm")
+    assert result.returncode != 0
+    assert "--llm" in result.stderr
+
+
+def test_cli_submit_requires_configuration() -> None:
+    """--submit（第 6 步）已实现：不再是未知参数，而是缺配置而非零退出。"""
+    result = _run_cli("samples/weather", "--submit")
+    assert result.returncode != 0
+    assert result.stdout.strip() == ""
+    assert "unrecognized arguments" not in result.stderr
