@@ -4,7 +4,6 @@
     python -m auditor.cli samples/mail-helper            # 输出报告，存 reports/
     python -m auditor.cli samples/mail-helper --submit   # 并上链
     python -m auditor.cli samples/mail-helper --llm      # 追加 LLM 一致性检查
-    python -m auditor.cli samples/mail-helper --sandbox  # 追加沙箱动态分析
 
 输出约定：
 - **stdout 只有报告 JSON**（UTF-8，`json.loads` 可直接解析）。
@@ -58,11 +57,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="把报告哈希提交到 SkillRegistry（需项目根 .env 与 deployments.json）",
     )
     parser.add_argument(
-        "--sandbox",
-        action="store_true",
-        help="插入式运行动态分析（sandbox）阶段：子进程插桩运行技能，捕获实际外连/子进程/敏感读取；默认关闭",
-    )
-    parser.add_argument(
         "--llm",
         action="store_true",
         help="追加 LLM 描述/代码一致性检查（需 .env 的 LLM_API_KEY/LLM_BASE_URL/LLM_MODEL）",
@@ -97,23 +91,6 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None) -> 
     except FileNotFoundError as exc:
         print(f"[错误] 找不到文件: {exc}", file=sys.stderr)
         return 2
-
-    if args.sandbox:
-        # 沙箱阶段在静态扫描之后：子进程插桩运行技能并阻断危险行为；
-        # 沙箱自身失败只记录、不产生 findings，不影响等级。
-        from .rules import load_rules
-        from .sandbox import run_sandbox as _run_sandbox
-        from .scanner import DEFAULT_RULES_DIR
-
-        outcome = _run_sandbox(Path(args.skill_dir), load_rules(DEFAULT_RULES_DIR, "sandbox"))
-        report = _with_findings(report, outcome.findings)
-        summary = f"modules={len(outcome.modules)} calls={len(outcome.calls)} events={len(outcome.events)}"
-        if outcome.error:
-            summary += f"（{outcome.error}，未计为命中）"
-        print(
-            f"[SkillGuard] 沙箱动态分析完成：追加 {len(outcome.findings)} 条命中 -> {report.level}；{summary}",
-            file=sys.stderr,
-        )
 
     if args.llm:
         # 静态扫描通过后才做一致性检查；失败即中止，既不落盘也不上链。
