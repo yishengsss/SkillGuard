@@ -10,3 +10,4 @@ installed/
 cache/
 reports/
 .DS_Store
+logs/

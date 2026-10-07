@@ -146,7 +146,7 @@ a{color:var(--acc)}
       <table>
         <caption id="tb-cap">等待加载链上数据。</caption>
         <thead>
-          <tr><th scope="col">技能 ID</th><th scope="col">版本</th><th scope="col">状态</th>
+          <tr><th scope="col">技能 ID</th><th scope="col">版本</th><th scope="col">审计者</th><th scope="col">状态</th>
             <th scope="col">许可证</th><th scope="col">报告哈希</th></tr>
         </thead>
         <tbody id="rows"></tbody>
@@ -372,6 +372,7 @@ async function readStates(client, versions, snapshot) {
       status: STATUS[statusIndex] || "Unknown(" + statusIndex + ")",
       reportHash: HASH_RE.test(reportHash || "") ? reportHash : "—",
       licensed: Boolean(licensed),
+      auditor: ADDR_RE.test(s[7] || "") ? s[7] : "",
     });
   }
   return rows;
@@ -466,6 +467,11 @@ function renderRows(rows) {
     idCell.appendChild(idNote);
     tr.appendChild(idCell);
     tr.appendChild(textCell(row.version));
+    // 审计者：链上 skills(key).auditor；未审计/未提交=零地址 → 显示 “—”（留空规则）
+    const auditorTd = document.createElement("td");
+    auditorTd.textContent = row.auditor && row.auditor !== "0x" + "0".repeat(40) ? shortAddr(row.auditor) : "—";
+    auditorTd.title = row.auditor && row.auditor !== "0x" + "0".repeat(40) ? row.auditor : "";
+    tr.appendChild(auditorTd);
     const st = document.createElement("td");
     st.appendChild(statusBadge(row));
     tr.appendChild(st);
