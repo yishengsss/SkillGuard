@@ -3,3 +3,4 @@ pyyaml
 pytest
 rich
 python-dotenv
+mcp
