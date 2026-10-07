@@ -13,10 +13,10 @@
    metadataHash / deposit / status / reportHash / auditor`），要求
    `status == AuditRequested(2)`、`publisher != auditor`、登记的 `codeHash` 与
    `metadataHash` 与报告一致。任一不过直接失败，**一笔都不发**。
-4. `auditorStake(auditor)` 与常量 `AUDITOR_STAKE`：仅质押不足时才发一笔
-   `stakeAsAuditor{value: AUDITOR_STAKE}`（合约每次至少要求最小值）。
-5. 该笔回执 `status == 1` 后才 `submitReport(skill, version, isMalicious, reportHash)`，
-   其中 `isMalicious = (level == MALICIOUS)`（SUSPICIOUS 按 SPEC 为 `false`）。
+4. `auditorStake(auditor)` 与常量 `AUDITOR_STAKE`：质押不足直接抛错并提示人先运行
+   `python -m auditor.stake`（押钱是人的决定，程序不代押）。
+5. `submitReport(skill, version, isMalicious, reportHash)`，其中 `isMalicious` 默认按
+   `level == MALICIOUS` 推导（SUSPICIOUS 不自动上链）；人工裁决时显式传入。
 
 每笔交易都重新取 `pending` nonce，带 `chainId`、`gasPrice`、`estimate_gas` + 余量，
 真实签名（`sign_transaction(...).raw_transaction`）后
@@ -39,7 +39,7 @@ from dotenv import dotenv_values
 from eth_account import Account
 from web3 import Web3
 
-from .report import MALICIOUS, Report
+from .report import MALICIOUS, SUSPICIOUS, Report
 
 # 与 SkillRegistry.sol 精确对应的最小 ABI（只含用到的成员）
 SKILL_REGISTRY_ABI: list[dict[str, Any]] = [
@@ -376,12 +376,23 @@ def submit_report_onchain(
     report_hash: bytes,
     code_hash: bytes,
     metadata_hash: bytes,
+    is_malicious: bool | None = None,
     log: Callable[[str], None] | None = None,
 ) -> list[str]:
-    """预检查 → （必要时）质押 → 提交报告，返回按顺序广播的交易哈希。
+    """预检查 → 提交报告，返回按顺序广播的交易哈希。
 
     合约由调用方用 `contract_for()` 绑定后传入；预检查不过则一笔都不发。
+    `is_malicious` 显式给定（人工裁决路径）时优先于 `level`；缺省时按
+    `level == MALICIOUS` 推导，SUSPICIOUS 不得自行上链（抛 `SubmitError`）。
     """
+    if is_malicious is None:
+        if level == MALICIOUS:
+            is_malicious = True
+        elif level == SUSPICIOUS:
+            raise SubmitError("SUSPICIOUS 不能自动上链，请由人裁决后显式传入 is_malicious")
+        else:
+            is_malicious = False
+
     _precheck(
         w3=w3,
         contract=contract,
@@ -395,6 +406,7 @@ def submit_report_onchain(
 
     tx_hashes: list[str] = []
 
+    # 质押是人的决定（SPEC 第 8.1 节）：Agent / CLI 不代押。
     try:
         staked = int(contract.functions.auditorStake(account.address).call())
         minimum = int(contract.functions.AUDITOR_STAKE().call())
@@ -402,18 +414,9 @@ def submit_report_onchain(
         raise SubmitError(f"读取质押额失败（{type(exc).__name__}）") from None
 
     if staked < minimum:
-        tx_hashes.append(
-            _send(
-                w3=w3,
-                account=account,
-                contract=contract,
-                chain_id=chain_id,
-                fn=contract.functions.stakeAsAuditor(),
-                value=minimum,
-                stage="质押审计者（stakeAsAuditor）",
-                log=log,
-            )
-        )
+        raise SubmitError(
+            f"质押不足（当前 {staked} < 要求 {minimum}）。请先运行 python -m auditor.stake 质押"
+        ) from None
 
     tx_hashes.append(
         _send(
@@ -422,7 +425,7 @@ def submit_report_onchain(
             contract=contract,
             chain_id=chain_id,
             fn=contract.functions.submitReport(
-                skill, version, level == MALICIOUS, report_hash
+                skill, version, is_malicious, report_hash
             ),
             value=0,
             stage="提交审计报告（submitReport）",

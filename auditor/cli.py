@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="把报告哈希提交到 SkillRegistry（需项目根 .env 与 deployments.json）",
     )
     parser.add_argument(
+        "--human-decision",
+        choices=["safe", "malicious"],
+        default=None,
+        help="人裁决 SUSPICIOUS：作为 humanDecision 字段写入报告后重新计算 reportHash 并上链；对 SAFE/MALICIOUS 使用报错",
+    )
+    parser.add_argument(
         "--llm",
         action="store_true",
         help="追加 LLM 描述/代码一致性检查（需 .env 的 LLM_API_KEY/LLM_BASE_URL/LLM_MODEL）",
@@ -110,9 +116,26 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None) -> 
         )
 
     if args.submit:
+        from .report import SUSPICIOUS
+
+        if args.human_decision is not None:
+            # 人工裁决只用于 SUSPICIOUS；对 SAFE/MALICIOUS 使用属于误用。
+            if report.level != SUSPICIOUS:
+                print(
+                    f"[错误] --human-decision 只对 SUSPICIOUS 生效（当前 {report.level}）",
+                    file=sys.stderr,
+                )
+                return 2
+        elif report.level == SUSPICIOUS:
+            # SUSPICIOUS 不自动上链（SPEC 1 主流程 / PROMPTS A1）。
+            print(
+                "[错误] SUSPICIOUS 不自动上链：请人工裁决后运行 --submit --human-decision safe|malicious",
+                file=sys.stderr,
+            )
+            return 3
         # 先设置真实审计者并保存，再广播；回执超时也保留报告。
         try:
-            _submit_and_save(report, root)
+            _submit_and_save(report, root, human_decision=args.human_decision)
         except SubmitError as exc:
             print(f"[错误] 上链提交失败：{exc}", file=sys.stderr)
             return 3
@@ -142,14 +165,22 @@ def main(argv: list[str] | None = None, *, project_root: Path | None = None) -> 
     return 0
 
 
-def _submit_and_save(report: Report, root: Path) -> None:
-    """设置真实审计者 → 保存报告 → 预检查 → 广播；失败时保留原报告。"""
+def _submit_and_save(report: Report, root: Path, *, human_decision: str | None = None) -> None:
+    """设置真实审计者（与人工裁决）→ 保存报告 → 预检查 → 广播；失败时保留原报告。
+
+    `humanDecision` 必须在计算 reportHash **之前**写入，链上哈希才与报告一致。
+    """
     config = load_config(
         env_path=root / ".env",
         deployments_path=root / "deployments.json",
     )
     account = auditor_account(config.private_key)
     payload = with_auditor(report, account.address)
+    is_malicious = payload["level"] == "MALICIOUS"
+    if human_decision is not None:
+        payload = dict(payload)  # 防御：避免就地改传入对象
+        payload["humanDecision"] = human_decision
+        is_malicious = human_decision == "malicious"
 
     print(
         f"[SkillGuard] 上链提交：{payload['skill']} {payload['version']} -> {payload['level']}"
@@ -174,6 +205,7 @@ def _submit_and_save(report: Report, root: Path) -> None:
         report_hash=report_hash(payload),
         code_hash=_hex_to_bytes(payload["codeHash"]),
         metadata_hash=_hex_to_bytes(payload["metadataHash"]),
+        is_malicious=is_malicious,
         log=lambda line: print(line, file=sys.stderr),
     )
 
