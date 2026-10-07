@@ -1,9 +1,9 @@
 """审计引擎 CLI（SPEC 第 4 节，docs/PROMPTS.md 第 5/6/8 步）。
 
 用法：
-    python -m auditor.cli samples/mail-helper            # 输出报告，存 reports/
-    python -m auditor.cli samples/mail-helper --submit   # 并上链
-    python -m auditor.cli samples/mail-helper --llm      # 追加 LLM 一致性检查
+    python -m auditor.cli <技能目录>            # 输出报告，存 reports/
+    python -m auditor.cli <技能目录> --submit   # 并上链（SUSPICIOUS 需加 --human-decision）
+    python -m auditor.cli <技能目录> --llm      # 追加 LLM 一致性检查
 
 输出约定：
 - **stdout 只有报告 JSON**（UTF-8，`json.loads` 可直接解析）。
@@ -20,6 +20,10 @@
 
 `--submit` 时先用 `Account.from_key(AUDITOR_PRIVATE_KEY).address` 替换零地址，
 再计算 reportHash（见 `auditor/submit.py`），报告字节与链上哈希因此一致。
+
+质押是人的决定（A1 / SPEC 8.1）：审计者未质押时 `--submit` 直接报错并提示
+`python -m auditor.stake`，CLI 不代押；SUSPICIOUS 不自动上链，需
+`--submit --human-decision safe|malicious`（humanDecision 计入 reportHash）。
 
 `project_root` 参数只用于测试注入（隔离 `.env` / `deployments.json` / `reports/` /
 `.cache/`），`python -m auditor.cli` 不暴露对应开关，默认即仓库根目录。

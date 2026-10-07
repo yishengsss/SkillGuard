@@ -256,9 +256,24 @@ def test_failed_request_does_not_break_batch(tmp_path: Path) -> None:
 # 集成（真实 anvil；127.0.0.1:8545 不可用则整组跳过）
 # --------------------------------------------------------------------------
 ANVIL_URL = "http://127.0.0.1:8545"
-# anvil 默认助记词派生账户，仅用于本地链测试（不在仓库其他地方出现）
-ANVIL_PUBLISHER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"  # #0
-ANVIL_AUDITOR_KEY = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d"  # #1
+# anvil 默认助记词（公开测试助记词，仅本地链测试）；测试运行时派生账户，不在仓库保存派生后的私钥
+ANVIL_MNEMONIC = "test test test test test test test test test test test junk"
+ANVIL_PUBLISHER_INDEX = 0  # #0：发布者
+ANVIL_AUDITOR_INDEX = 1  # #1：审计者运营方
+
+from eth_account import Account as _AnvilAccount  # noqa: E402
+
+_AnvilAccount.enable_unaudited_hdwallet_features()
+ANVIL_PUBLISHER_KEY = _AnvilAccount.from_mnemonic(
+    ANVIL_MNEMONIC, account_path=f"m/44'/60'/0'/0/{ANVIL_PUBLISHER_INDEX}"
+).key.hex()
+ANVIL_AUDITOR_KEY = _AnvilAccount.from_mnemonic(
+    ANVIL_MNEMONIC, account_path=f"m/44'/60'/0'/0/{ANVIL_AUDITOR_INDEX}"
+).key.hex()
+if not ANVIL_PUBLISHER_KEY.startswith("0x"):
+    ANVIL_PUBLISHER_KEY = "0x" + ANVIL_PUBLISHER_KEY
+if not ANVIL_AUDITOR_KEY.startswith("0x"):
+    ANVIL_AUDITOR_KEY = "0x" + ANVIL_AUDITOR_KEY
 
 EVENT_ABI = submit_mod.SKILL_REGISTRY_ABI + [
     {
