@@ -176,6 +176,7 @@ const RPC_PRESET = {
   11155111: "https://ethereum-sepolia-rpc.publicnode.com",
 };
 const VIEM_URL = "https://esm.sh/viem@2.38.0";
+const LOCAL_REPORTS_AVAILABLE = ["localhost", "127.0.0.1", "::1"].includes(location.hostname);
 
 // ABI 与 contracts/src/SkillRegistry.sol、SkillLicense.sol 精确对应
 const REGISTRY_ABI = [
@@ -454,13 +455,20 @@ function reportCell(row) {
   });
   actions.appendChild(copy);
 
-  // 报告文件按 reportHash 命名；这里只是本地相对路径提示，不校验文件是否存在
-  const link = document.createElement("a");
-  link.href = "../reports/" + row.reportHash + ".json";
-  link.textContent = "本地报告文件（若存在）";
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  actions.appendChild(link);
+  // 本机仓库可选读 reports/ 文件；静态托管只发布看板和 deployments.json，不发布本机报告目录。
+  if (LOCAL_REPORTS_AVAILABLE) {
+    const link = document.createElement("a");
+    link.href = "../reports/" + row.reportHash + ".json";
+    link.textContent = "本地报告文件（若存在）";
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    actions.appendChild(link);
+  } else {
+    const note = document.createElement("span");
+    note.className = "muted";
+    note.textContent = "静态看板不托管报告文件";
+    actions.appendChild(note);
+  }
   box.appendChild(actions);
   return box;
 }

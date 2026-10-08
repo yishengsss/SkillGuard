@@ -415,7 +415,7 @@ const fs = require('node:fs'), vm = require('node:vm');
 const html = fs.readFileSync(process.argv[1], 'utf8');
 const start = html.indexOf('function reportCell(row) {');
 const end = html.indexOf('function renderRows(rows) {', start);
-const context = {HASH_RE: /^0x[0-9a-f]{64}$/i, document: {createElement(tag) {return {
+const context = {HASH_RE: /^0x[0-9a-f]{64}$/i, LOCAL_REPORTS_AVAILABLE: true, document: {createElement(tag) {return {
   tag, children: [], appendChild(child) {this.children.push(child);}, setAttribute() {}, addEventListener() {}
 };}}};
 vm.runInNewContext(html.slice(start, end), context);
@@ -426,6 +426,27 @@ process.stdout.write(link.href);
     run = subprocess.run([shutil.which("node"), "-e", javascript, str(ROOT / "web/index.html"), digest], check=True, capture_output=True, text=True)
     assert (tmp_path / "web" / run.stdout).resolve() == path
     assert path.is_file()
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node is required for frontend behavior tests")
+def test_static_dashboard_does_not_link_to_unpublished_report_files():
+    javascript = """
+const fs = require('node:fs'), vm = require('node:vm');
+const html = fs.readFileSync(process.argv[1], 'utf8');
+const start = html.indexOf('function reportCell(row) {');
+const end = html.indexOf('function renderRows(rows) {', start);
+const context = {HASH_RE: /^0x[0-9a-f]{64}$/i, LOCAL_REPORTS_AVAILABLE: false,
+ document: {createElement(tag) {return {tag, children: [], appendChild(child) {this.children.push(child);}, setAttribute() {}, addEventListener() {}};}}};
+vm.runInNewContext(html.slice(start, end), context);
+const cell = context.reportCell({reportHash: '0x' + 'a'.repeat(64), skillId: 'fixture', version: '1'});
+const nodes = cell.children.flatMap(item => item.children);
+process.stdout.write(JSON.stringify({links: nodes.filter(item => item.tag === 'a').length,
+ notes: nodes.filter(item => item.tag === 'span').map(item => item.textContent)}));
+"""
+    run = subprocess.run([shutil.which("node"), "-e", javascript, str(ROOT / "web/index.html")], check=True, capture_output=True, text=True)
+    result = json.loads(run.stdout)
+    assert result["links"] == 0
+    assert "静态看板不托管报告文件" in result["notes"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node is required for frontend behavior tests")
