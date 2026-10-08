@@ -2,7 +2,7 @@
 
 # SkillGuard · 技能卫士
 
-[简体中文](README.zh-CN.md) · [English](README.md)
+[简体中文](README.zh-CN.md) · [English](README.md) · [Español](README.es.md) · [日本語](README.ja.md)
 
 ### 在安装前核验 AI Agent 技能，让审计过程与链上结论可追溯
 
