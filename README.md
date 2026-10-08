@@ -24,6 +24,7 @@
 - [协议版本](#协议版本)
 - [功能](#功能)
 - [快速开始](#快速开始)
+- [Vercel 静态看板](#vercel-静态看板)
 - [角色页面](#角色页面)
 - [测试](#测试)
 - [安全边界与已知限制](#安全边界与已知限制)
@@ -150,6 +151,12 @@ anvil
 ```bash
 DEMO_RPC_URL=http://127.0.0.1:8545 ./demo.sh --no-pause
 ```
+
+### Vercel 静态看板
+
+仓库根目录已包含 `vercel.json`。在 Vercel 导入此 GitHub 仓库，使用仓库根目录作为 Project Root，Framework Preset 选择 **Other**，不配置 Build Command 和 Output Directory，然后部署即可。入口页会重写到 `web/index.html`，部署地址会读取同一站点的 `deployments.json`。
+
+这只发布**只读链上看板**。Vercel 不会运行本机的 `ops.server`，也不提供发布、审计、仲裁或安装操作；角色操作台仍需按下方说明在本机启动。公开站点仅查询 `deployments.json` 指向的网络，更新页面代码不会迁移或更改链上合约。
 
 ### 启动网页应用
 

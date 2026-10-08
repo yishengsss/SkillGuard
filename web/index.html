@@ -164,6 +164,12 @@ const MAX_SCAN = 100000n;     // 单次扫描允许的最大区块总数
 const ADDR_RE = /^0x[0-9a-fA-F]{40}$/;
 const HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 
+// 本地开发以 /web/index.html 打开；GitHub Pages 将其发布为仓库根 index.html。
+// 根据 URL 选择部署配置的相对路径，兼容 https://<owner>.github.io/<repo>/ 子路径。
+const DEPLOYMENTS_URL = /\/web\/index\.html$/.test(location.pathname)
+  ? "../deployments.json"
+  : "./deployments.json";
+
 const RPC_PRESET = {
   968: "https://rpc.bohr.life",
   31337: "http://127.0.0.1:8545",
@@ -267,7 +273,7 @@ async function copyHash(hash) {
 }
 
 async function loadConfig() {
-  const res = await fetch("../deployments.json", { cache: "no-store" });
+  const res = await fetch(DEPLOYMENTS_URL, { cache: "no-store" });
   if (!res.ok) throw new Error("config");
   const data = await res.json();
   const chainId = Number(data.chainId);
