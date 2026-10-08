@@ -198,6 +198,8 @@ Para probar roles de forma aislada, el harness crea otra instancia Anvil y usa w
 .venv/bin/python tests/role_demo.py --rpc-port 18857 --port 18701
 ```
 
+Añade `--mock-agent` para probar el flujo v2 de arbitraje de extremo a extremo. La interfaz indica claramente que es un **fixture determinista de protocolo, no una auditoría de IA**. Las wallets y transacciones de prueba quedan limitadas al Anvil aislado.
+
 ### Servidor de instalación MCP
 
 Cualquier agente compatible puede invocar las herramientas stdio:

@@ -198,6 +198,8 @@ DEMO_RPC_URL=http://127.0.0.1:8545 ./demo.sh --no-pause
 .venv/bin/python tests/role_demo.py --rpc-port 18857 --port 18701
 ```
 
+v2 の仲裁フローを一通り試すには `--mock-agent` を追加します。画面には**決定的なプロトコルテスト fixture であり、AI 監査ではない**ことが明示されます。テスト用 wallet とトランザクションは隔離 Anvil 内に限定されます。
+
 ### MCP インストールサーバー
 
 MCP 対応 Agent は stdio ツールを呼び出せます：

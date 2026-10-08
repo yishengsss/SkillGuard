@@ -1,7 +1,7 @@
 from ops.app import OpsApplication
 import pytest
 
-@pytest.mark.parametrize('route,mime',[('/','text/html'),('/publish','text/html'),('/assets/api.mjs','text/javascript'),('/assets/app.css','text/css')])
+@pytest.mark.parametrize('route,mime',[('/','text/html'),('/publish','text/html'),('/assets/api.mjs','text/javascript'),('/assets/decisionDraft.mjs','text/javascript'),('/assets/app.css','text/css')])
 def test_role_resources_direct_refresh(tmp_path,route,mime):
     app=OpsApplication(tmp_path)
     reply=app.handle('GET',route,{'Host':'127.0.0.1:8765'},b'')
@@ -22,7 +22,7 @@ def test_symlink_static_file_is_not_served(tmp_path):
     assert reply.status==404 and b'TEST_ONLY_SECRET' not in reply.body
 
 
-@pytest.mark.parametrize('route',['/audit','/admin','/install','/skills/'+'0x'+'ab'*32])
+@pytest.mark.parametrize('route',['/audit','/admin','/install','/arbitration','/skills/'+'0x'+'ab'*32])
 def test_all_remaining_role_pages_can_refresh(tmp_path,route):
     reply=OpsApplication(tmp_path).handle('GET',route,{'Host':'127.0.0.1:8765'},b'')
     assert reply.status==200 and b'<nav' in reply.body

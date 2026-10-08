@@ -190,7 +190,8 @@ def test_malicious_and_pending_reject(anvil, monkeypatch, tmp_path: Path) -> Non
     )
     register_ok_chain(anvil, bad, bad_source, malicious=True)
     result = mcp_server.check_skill(str(bad_source), project_root=anvil.project)
-    assert result["allowed"] is False and "Malicious(4)" in result["status"]
+    # The fixture uses protocol v2, so a malicious report is provisional until arbitration.
+    assert result["allowed"] is False and "ArbitrationPending(5)" in result["status"]
     install = mcp_server.install_skill(str(bad_source), project_root=anvil.project, install_root=tmp_path / "inst-bad")
     assert install["installed"] is False
     assert install.get("installed_path") is None

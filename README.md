@@ -192,11 +192,13 @@ Start the local web service:
 
 Open <http://127.0.0.1:8765/>. The service binds to loopback only; do not expose it through a reverse proxy or public network.
 
-For an isolated role walkthrough, a test harness starts a separate Anvil instance and uses public test wallets. Never send real assets to those wallets:
+For an isolated v2 role walkthrough, a test harness starts a separate Anvil instance, deploys a fresh protocol-v2 pair, and provides six public test wallets (two publishers, auditor, owner, arbiter, treasury). Never send real assets to those wallets:
 
 ```bash
 .venv/bin/python tests/role_demo.py --rpc-port 18857 --port 18701
 ```
+
+Add `--mock-agent` to exercise the v2 arbitration flow end to end. The UI explicitly labels this as a **deterministic protocol fixture, not an AI audit**. All test wallets and transactions are confined to the isolated Anvil chain.
 
 ### MCP installation server
 

@@ -87,7 +87,7 @@ class OpsApplication:
                     pages[route]='detail'
                 resource=None
                 if route in pages: resource=('pages/'+pages[route]+'.html','text/html; charset=utf-8')
-                assets={'api','wallet','shell','transactions'}
+                assets={'api','wallet','shell','transactions','decisionDraft'}
                 page_modules={'catalog','publish','audit','admin','detail','install','arbitration'}
                 if route=='/assets/app.css': resource=('assets/app.css','text/css; charset=utf-8')
                 for name in assets:

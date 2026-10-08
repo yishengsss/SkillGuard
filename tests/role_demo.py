@@ -1,6 +1,7 @@
 """Isolated demo with a public local EOA provider; production never serves it."""
 import argparse
 import json
+import re
 import sys
 import tempfile
 import threading
@@ -13,12 +14,23 @@ from tests.roles_fixtures import make_role_fixture
 from ops.server import Handler,OpsHTTPServer,HTTPError
 
 
+def inject_test_ui(body: bytes, *, mock_agent: bool) -> bytes:
+    """Inject the public-wallet selector and optional fixture warning into valid HTML."""
+    warning=(b'<div style="background:#fff3cd;color:#6b4f00;padding:8px 16px;text-align:center;font:13px sans-serif">'
+             b'\xe2\x9a\xa0 TEST MODE: deterministic protocol fixture; this is NOT an AI audit</div>'
+             if mock_agent else b'')
+    content=re.sub(rb'(<body\b[^>]*>)',lambda match:match.group(1)+warning,body,count=1)
+    return content.replace(b'<script type="module"',b'<script type="module" src="/__test_wallet.mjs"></script><script type="module"',1)
+
+
 class TestHandler(Handler):
     def _dispatch(self,method,body=b''):
         if method!='GET': return super()._dispatch(method,body)
         if method=='GET' and self.path=='/__test_wallet':
             fixture=self.server.fixture
-            accounts=[('发布者 A',fixture.chain.publishers[0]),('发布者 B',fixture.chain.publishers[1]),('审计者',fixture.chain.auditor),('管理员',fixture.chain.owner)]
+            accounts=[('发布者 A',fixture.chain.publishers[0]),('发布者 B',fixture.chain.publishers[1]),
+                      ('审计者',fixture.chain.auditor),('管理员',fixture.chain.owner),
+                      ('独立仲裁者',fixture.chain.arbiter),('公共资金钱包',fixture.chain.treasury)]
             self._jsonify({'accounts':[{'label':label,'address':account.address,'key':'0x'+account.key.hex().removeprefix('0x')} for label,account in accounts]})
             return
         if method=='GET' and self.path=='/__test_wallet.mjs':
@@ -26,7 +38,7 @@ class TestHandler(Handler):
             self.send_response(200);self.send_header('Content-Type','text/javascript');self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content);return
         reply=self._application().handle(method,self.path,dict(self.headers.items()),body)
         if reply.headers.get('Content-Type','').startswith('text/html'):
-            content=reply.body.replace(b'<script type="module"',b'<script type="module" src="/__test_wallet.mjs"></script><script type="module"',1)
+            content=inject_test_ui(reply.body,mock_agent=self.server.fixture.mock_agent)
             self.send_response(reply.status)
             for key,value in reply.headers.items():self.send_header(key,value)
             self.send_header('Content-Length',str(len(content)));self.end_headers();self.wfile.write(content)
@@ -50,6 +62,7 @@ class RoleHTTPFixture:
     def __init__(self,root,rpc_port=0,http_port=0,*,mock_agent=False):
         self.chain=make_role_fixture(root,rpc_port=rpc_port)
         self.root=self.chain.root
+        self.mock_agent=mock_agent
         self.model_api=None
         if mock_agent:
             from tests.agent_api_fixture import FixtureAPI
@@ -71,11 +84,12 @@ class RoleHTTPFixture:
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--rpc-port',type=int,default=18857);parser.add_argument('--port',type=int,default=18701);args=parser.parse_args()
+    parser=argparse.ArgumentParser();parser.add_argument('--rpc-port',type=int,default=18857);parser.add_argument('--port',type=int,default=18701);parser.add_argument('--mock-agent',action='store_true',help='use deterministic protocol fixture; NOT an AI audit');args=parser.parse_args()
     cache=ROOT/'.cache/role-demo';cache.mkdir(parents=True,exist_ok=True)
     root=Path(tempfile.mkdtemp(prefix='session-',dir=cache))
-    fixture=RoleHTTPFixture(root,args.rpc_port,args.port)
-    print('Isolated role demo: '+fixture.origin+'\nPublic Anvil fixture accounts only. Ctrl-C stops only this demo.',flush=True)
+    fixture=RoleHTTPFixture(root,args.rpc_port,args.port,mock_agent=args.mock_agent)
+    mode='DETERMINISTIC TEST FIXTURE (NOT AI)' if args.mock_agent else 'real model required for Agent audit'
+    print('Isolated protocol-v2 role demo: '+fixture.origin+'\n'+mode+'\nPublic Anvil fixture accounts only. Ctrl-C stops only this demo.',flush=True)
     try:
         while True:threading.Event().wait(1)
     except KeyboardInterrupt:pass
