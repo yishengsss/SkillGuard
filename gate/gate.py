@@ -45,7 +45,7 @@ from rich.text import Text  # noqa: E402
 from web3 import Web3  # noqa: E402
 
 from auditor.hashing import code_hash, metadata_hash  # noqa: E402
-from auditor.skill_dir import MANIFEST_NAME, SkillDirError, safe_read_text  # noqa: E402
+from auditor.skill_dir import MANIFEST_NAME, SkillDirError, SkillSnapshot, capture_skill  # noqa: E402
 
 DEPLOYMENTS_FILE = "deployments.json"
 ENV_FILE = ".env"
@@ -195,14 +195,11 @@ def load_gate_config(project_root: Path) -> GateConfig:
 # --------------------------------------------------------------------------
 # manifest（只读取，不执行技能代码）
 # --------------------------------------------------------------------------
-def read_manifest_identity(skill_dir: Path) -> tuple[str, str]:
+def read_manifest_identity(skill_dir: Path | SkillSnapshot) -> tuple[str, str]:
     """读 manifest.json 的 `name` / `version`（顶层对象 + 非空字符串）。"""
-    root = Path(skill_dir)
-    if not root.is_dir():
-        raise GateError(f"技能目录不存在或不是目录: {skill_dir}")
-
     try:
-        raw = safe_read_text(root / MANIFEST_NAME)  # 拒绝符号链接 / FIFO
+        captured = skill_dir if isinstance(skill_dir, SkillSnapshot) else capture_skill(skill_dir)
+        raw = captured.manifest_bytes.decode("utf-8", errors="replace")
     except SkillDirError as exc:
         raise GateError(str(exc)) from None
 
@@ -289,12 +286,13 @@ def _check_onchain(config: GateConfig, skill: str, version: str) -> tuple[int, b
     return int(entry[5]), _as_bytes32(entry[2]), _as_bytes32(entry[3]), bool(verified)
 
 
-def check_install(skill_dir: Path, config: GateConfig) -> Decision:
+def check_install(skill_dir: Path | SkillSnapshot, config: GateConfig) -> Decision:
     """完整门禁判定；`GateError` 表示无法完成（exit 2），否则返回 `Decision`。"""
-    skill, version = read_manifest_identity(skill_dir)
     try:
-        local_code_hash = code_hash(skill_dir)
-        local_metadata_hash = metadata_hash(skill_dir)
+        captured = skill_dir if isinstance(skill_dir, SkillSnapshot) else capture_skill(skill_dir)
+        skill, version = read_manifest_identity(captured)
+        local_code_hash = code_hash(captured)
+        local_metadata_hash = metadata_hash(captured)
     except SkillDirError as exc:
         raise GateError(str(exc)) from None
 

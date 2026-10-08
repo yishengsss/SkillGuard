@@ -1,29 +1,19 @@
-"""SkillGuard 操作台后端（A8.5；SPEC 1 主流程的人机界面）。
+"""SkillGuard 本机角色 HTTP 服务。
 
-启动：
-    .venv/bin/python ops/server.py            # http://127.0.0.1:8765
-
-只绑定 127.0.0.1，仅供本地演示。**不是公共物品的一部分**：它用 .env 里的私钥代表
-"人"签名交易（发布者 / 审计者运营方 / 管理员），不要部署到公开网络。
-
-端点（全部 JSON；判定/数值/哈希/交易号实时从链上读取或来自真实交易回执）：
-    GET  /api/snapshot              面板快照：三角色地址/余额、质押、注册版本逐条读链
-    POST /api/deploy                管理员部署（仅本地链 31337；写回 deployments.json）
-    POST /api/stake                 人质押（AUDITOR_PRIVATE_KEY，复用 auditor.stake）
-    POST /api/register {skill_dir}  发布者注册 + 请求审计（押金 = 链上 MIN_DEPOSIT）
-    POST /api/agent-once            审计 Agent 跑一轮（复用 auditor.agent，不复制判定逻辑）
-    POST /api/decide {skill_dir, decision}    SUSPICIOUS 人工裁决（同 cli --human-decision 语义）
-    POST /api/install {skill_dir}   安装方语义：gate MCP 的 install_skill（查链→复制→复检）
-    GET  /                          操作台前端（web/ops.html）
-
-失败即 {"ok": false, "error": "..."}；错误信息不含密钥 / RPC URL。
+启动：.venv/bin/python ops/server.py，默认 127.0.0.1:8765。
+HTTP 登录使用浏览器 EOA 的 SIWE 签名，旧人的代签端点返回 410。
+原 Python 辅助函数保留供本机 CLI/旧测试使用，不由 HTTP 路由调用。
+公开配置不包含私钥或带凭据 RPC；错误只返回受控说明。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import secrets
+import shutil
 import sys
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -34,6 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from dotenv import dotenv_values  # noqa: E402
 from web3 import Web3  # noqa: E402
+from ops.app import OpsApplication  # noqa: E402
 
 import auditor.submit as submit_mod  # noqa: E402
 from auditor import agent as agent_mod  # noqa: E402
@@ -62,6 +53,12 @@ ZERO_ADDR = "0x" + "0" * 40
 
 class OpsError(Exception):
     """操作台业务错误；str() 可直接展示给人（不含密钥/RPC URL）。"""
+
+
+class HTTPError(OpsError):
+    def __init__(self, message: str, status: int = 403) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 # --------------------------------------------------------------------------
@@ -221,7 +218,8 @@ def snapshot() -> dict:
 
         lic = w3.eth.contract(address=Web3.to_checksum_address(_license_address()), abi=audit_license_abi())
         seen: dict[bytes, dict] = {}
-        events = contract.events.SkillRegistered.get_logs(from_block=0, to_block="latest")
+        events = contract.events.SkillRegistered.get_logs(
+            from_block=deployed.get("deploymentBlock", 0), to_block="latest")
         for entry in events:
             args = entry["args"]
             key = bytes(args["key"])
@@ -270,6 +268,9 @@ def snapshot() -> dict:
         "ok": True,
         "chainId": chain_id,
         "deployedChainId": deployed.get("chainId"),
+        "networkName": {31337: "本地 Anvil", 11155111: "Sepolia", 968: "BOT Chain Testnet"}.get(chain_id, str(chain_id)),
+        "nativeSymbol": "tBOT" if chain_id == 968 else "ETH",
+        "deploymentBlock": deployed.get("deploymentBlock", 0),
         "registry": registry,
         "license": roles.get("license"),
         "hasCode": has_code,
@@ -280,7 +281,7 @@ def snapshot() -> dict:
         "minDeposit": min_deposit,
         "skills": skills,
         "pending": pending,
-        "cursor": agent_mod.read_cursor(PROJECT_ROOT),
+        "cursor": agent_mod.read_cursor(PROJECT_ROOT, chain_id, registry),
     }
 
 
@@ -336,18 +337,32 @@ def _send(w3: Web3, private_key: str, fn, value: int = 0, stage: str = "") -> st
     )
 
 
+def _forge_executable() -> str:
+    executable = shutil.which("forge")
+    if executable:
+        return executable
+    candidate = Path.home() / ".foundry" / "bin" / "forge"
+    if candidate.is_file() and os.access(candidate, os.X_OK):
+        return str(candidate)
+    raise OpsError("未找到可执行的 forge，请先安装 Foundry 并运行 foundryup")
+
+
 def deploy() -> dict:
+    forge = _forge_executable()
     env = _env()
     owner_key = _key(env, "OWNER_PRIVATE_KEY")
     rpc = _rpc_url()
-    chain_id = _w3().eth.chain_id
+    w3 = w3_or_url(rpc)
+    chain_id = w3.eth.chain_id
+    if chain_id == 968:
+        return _deploy_bot(forge, owner_key, rpc, w3)
     if chain_id != 31337:
-        raise OpsError("仅本地链（chainId 31337）可用操作台部署")
+        raise OpsError("操作台仅支持本地链 31337 和 BOT 测试网 968 部署")
     _fund_local(w3_or_url(rpc))
     import subprocess
 
     proc = subprocess.run(
-        ["forge", "script", "script/Deploy.s.sol", "--rpc-url", rpc, "--broadcast"],
+        [forge, "script", "script/Deploy.s.sol", "--rpc-url", rpc, "--broadcast"],
         cwd=str(PROJECT_ROOT / "contracts"),
         env={**os.environ, "PRIVATE_KEY": owner_key},
         capture_output=True,
@@ -359,6 +374,86 @@ def deploy() -> dict:
         raise OpsError(f"部署失败（forge exit {proc.returncode}）")
     data = _deployment()
     return {"registry": data.get("SkillRegistry"), "license": data.get("SkillLicense")}
+
+
+def _verify_bot_deployment(w3: Web3, data: dict, owner: str) -> int:
+    """Validate all four live receipts plus contract wiring; return creation block."""
+    if data.get("chainId") != 968 or w3.eth.chain_id != 968:
+        raise OpsError("BOT 部署 chainId 不匹配")
+    addresses = []
+    for name in ("SkillRegistry", "SkillLicense"):
+        address = data.get(name)
+        if not isinstance(address, str) or not Web3.is_checksum_address(address):
+            raise OpsError(f"BOT 部署缺少合法的 {name} 地址")
+        if not w3.eth.get_code(address):
+            raise OpsError(f"BOT 部署 {name} 没有合约字节码")
+        addresses.append(address)
+    registry, license = addresses
+    record_path = PROJECT_ROOT / "contracts/broadcast/Deploy.s.sol/968/run-latest.json"
+    try:
+        transactions = json.loads(record_path.read_text())["transactions"]
+        expected = [("CREATE", registry), ("CREATE", license), ("CALL", registry), ("CALL", license)]
+        if len(transactions) != len(expected):
+            raise ValueError("unexpected transactions")
+        blocks = []
+        for transaction, (kind, address) in zip(transactions, expected):
+            if transaction.get("transactionType") != kind or Web3.to_checksum_address(transaction["contractAddress"]) != address:
+                raise ValueError("unexpected contract")
+            receipt = w3.eth.get_transaction_receipt(transaction["hash"])
+            if receipt["status"] != 1:
+                raise OpsError("BOT 部署交易回执失败，未切换部署配置")
+            if kind == "CREATE" and Web3.to_checksum_address(receipt["contractAddress"]) != address:
+                raise ValueError("unexpected creation address")
+            blocks.append(int(receipt["blockNumber"]))
+    except OpsError:
+        raise
+    except Exception as exc:
+        raise OpsError(f"BOT 部署回执核验失败（{type(exc).__name__}）") from None
+
+    def view(name, output, inputs=None):
+        return {"type": "function", "name": name, "stateMutability": "view",
+                "inputs": inputs or [], "outputs": [{"type": output}]}
+    reg = w3.eth.contract(address=registry, abi=[view("owner", "address"), view("skillLicense", "address")])
+    lic = w3.eth.contract(address=license, abi=[view("owner", "address"), view("registry", "address"),
+                         view("MINTER_ROLE", "bytes32"), view("hasRole", "bool", [{"type": "bytes32"}, {"type": "address"}])])
+    if (reg.functions.owner().call() != owner or lic.functions.owner().call() != owner
+            or reg.functions.skillLicense().call() != license or lic.functions.registry().call() != registry
+            or not lic.functions.hasRole(lic.functions.MINTER_ROLE().call(), registry).call()):
+        raise OpsError("BOT 合约接线或权限核验失败，未切换部署配置")
+    return min(blocks)
+
+
+def _deploy_bot(forge: str, owner_key: str, rpc: str, w3: Web3) -> dict:
+    """Stage Foundry output and atomically activate only the verified BOT deployment."""
+    import subprocess
+    cache = PROJECT_ROOT / ".cache"
+    cache.mkdir(exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="bot-deployment-", suffix=".json", dir=cache)
+    os.close(fd)
+    candidate = Path(name)
+    try:
+        proc = subprocess.run(
+            [forge, "script", "script/Deploy.s.sol", "--rpc-url", rpc,
+             "--broadcast", "--slow", "--legacy"],
+            cwd=str(PROJECT_ROOT / "contracts"),
+            env={**os.environ, "PRIVATE_KEY": owner_key, "DEPLOYMENTS_PATH": str(candidate)},
+            capture_output=True, text=True, timeout=300, check=False)
+        if proc.returncode != 0:
+            raise OpsError(f"部署失败（forge exit {proc.returncode}）")
+        data = json.loads(candidate.read_text(encoding="utf-8"))
+        data["deploymentBlock"] = _verify_bot_deployment(w3, data, auditor_account(owner_key).address)
+        with candidate.open("w", encoding="utf-8") as output:
+            output.write(json.dumps(data, indent=2) + "\n")
+            output.flush()
+            os.fsync(output.fileno())
+        candidate.replace(DEPLOYMENTS)
+        return {"registry": data["SkillRegistry"], "license": data["SkillLicense"]}
+    except OpsError:
+        raise
+    except Exception as exc:
+        raise OpsError(f"BOT 部署失败（{type(exc).__name__}）") from None
+    finally:
+        candidate.unlink(missing_ok=True)
 
 
 def stake() -> dict:
@@ -449,13 +544,14 @@ def agent_once(from_block: int | None = None) -> dict:
         w3=w3,
         log=lambda line: None,
         submitter=submit_mod.submit_report_onchain,
+        deployment_block=config.deployment_block,
     )
     staked = int(contract.functions.auditorStake(account.address).call())
     minimum = int(contract.functions.AUDITOR_STAKE().call())
     if staked < minimum:
         raise OpsError(f"审计者未质押（当前 {staked} < {minimum}），请先点「质押」")
 
-    cursor = agent_mod.read_cursor(PROJECT_ROOT)
+    cursor = agent_mod.read_cursor(PROJECT_ROOT, config.chain_id, config.registry_address)
     if from_block is not None:
         cursor = max(0, int(from_block))
     new_cursor, latest = agent_mod.run_once(ctx, cursor)
@@ -471,31 +567,23 @@ def decide(skill_dir: str, decision: str) -> dict:
     """SUSPICIOUS 人工裁决（与 cli --human-decision 同语义：人写结论 → 重算哈希 → 上链）。"""
     if decision not in ("safe", "malicious"):
         raise OpsError("decision 只能是 safe 或 malicious")
-    env = _env()
-    auditor_key = _key(env, "AUDITOR_PRIVATE_KEY")
-    account = auditor_account(auditor_key)
     path = _resolve_skill_dir(skill_dir)
-
-    report = scan_skill_report(path)  # 静态引擎判定，仅取内容做哈希
-    payload = dict(report.to_dict())
-    payload = submit_mod.with_auditor(payload, account.address)
-    payload["humanDecision"] = decision
-    digest = report_hash(payload)
-
+    report = scan_skill_report(path)
+    if report.level != SUSPICIOUS:
+        raise OpsError(f"人工裁决只对 SUSPICIOUS 生效（当前 {report.level}）")
+    config = load_auditor_config(env_path=PROJECT_ROOT / ".env", deployments_path=DEPLOYMENTS)
+    account = auditor_account(config.private_key)
     w3 = _w3()
-    contract = _contract(w3, _registry_address())
-    key = contract.functions.keyOf(str(payload["skill"]), str(payload["version"])).call()
-    entry = contract.functions.skills(key).call()
-    if int(entry[5]) != 2:
-        raise OpsError(f"链上状态不是 AuditRequested(2)（当前 {int(entry[5])}），不允许裁决")
-    tx = _send(
-        w3, auditor_key,
-        contract.functions.submitReport(
-            str(payload["skill"]), str(payload["version"]), decision == "malicious", digest
-        ),
-        0, f"submitReport(humanDecision={decision})",
+    contract = contract_for(w3, config)
+    payload, transactions, _ = submit_mod.submit_and_save_report(
+        report=report, reports_dir=PROJECT_ROOT / "reports", human_decision=decision,
+        w3=w3, contract=contract, account=account, chain_id=config.chain_id,
     )
-    return {"tx": tx, "decision": decision, "reportHash": "0x" + digest.hex(), "auditor": account.address}
+    digest = report_hash(payload)
+    key = contract.functions.keyOf(str(payload["skill"]), str(payload["version"])).call()
+    pending = PROJECT_ROOT / "reports" / "pending" / f"0x{bytes(key).hex()}.json"
+    pending.unlink(missing_ok=True)  # 只有收到成功回执后才清理待裁决记录。
+    return {"tx": transactions[-1], "decision": decision, "reportHash": "0x" + digest.hex(), "auditor": account.address}
 
 
 def install(skill_dir: str) -> dict:
@@ -517,73 +605,118 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:  # 静默默认访问日志
         pass
 
+    def end_headers(self) -> None:
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("X-Frame-Options", "DENY")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        super().end_headers()
+
+    def _authorize(self, *, mutating: bool = False) -> None:
+        host = self.headers.get("Host", "")
+        port = self.server.server_port
+        if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+            raise HTTPError("请求来源不被允许")
+        origin = self.headers.get("Origin")
+        if (origin is not None and origin != f"http://{host}") or self.headers.get("Sec-Fetch-Site") not in (None, "none", "same-origin"):
+            raise HTTPError("请求来源不被允许")
+        if mutating:
+            if origin != f"http://{host}":
+                raise HTTPError("请求来源不被允许")
+            content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            expected_type = "application/zip" if self.path == "/api/packages" else "application/json"
+            if content_type != expected_type:
+                raise HTTPError("请求格式不符合接口要求", 415)
+            token = self.headers.get("X-SkillGuard-Token", "")
+            if not token or not secrets.compare_digest(token, self.server.csrf_token):
+                raise HTTPError("操作会话已失效，请刷新页面重试")
+
     def _jsonify(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for key, value in getattr(self, '_response_headers', {}).items():
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
     def _post_body(self) -> dict:
-        length = int(self.headers.get("Content-Length", "0") or 0)
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            raise HTTPError("请求长度无效", 400) from None
+        if length < 0:
+            raise HTTPError("请求长度无效", 400)
+        if length > 64 * 1024:
+            raise HTTPError("请求内容过大", 413)
         if not length:
             return {}
         try:
             data = json.loads(self.rfile.read(length).decode("utf-8"))
-            return data if isinstance(data, dict) else {}
+            if not isinstance(data, dict):
+                raise HTTPError("请求内容必须是 JSON 对象", 400)
+            return data
         except ValueError:
-            return {}
+            raise HTTPError("请求不是合法 JSON", 400) from None
 
-    def do_GET(self) -> None:  # noqa: N802 (stdlib 命名约定)
-        if self.path in ("/", "/index.html"):
-            ops_html = PROJECT_ROOT / "web" / "ops.html"
-            if ops_html.is_file() and not ops_html.is_symlink():
-                body = ops_html.read_bytes()
-                self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            self._jsonify({"ok": False, "error": "web/ops.html 缺失"}, 500)
-            return
-        if self.path == "/api/snapshot":
-            try:
-                self._jsonify(snapshot())
-            except OpsError as exc:
-                self._jsonify({"ok": False, "error": str(exc)})
-            except Exception as exc:
-                self._jsonify({"ok": False, "error": f"读取失败（{type(exc).__name__}）"})
-            return
-        self._jsonify({"ok": False, "error": "not found"}, 404)
+    def _application(self) -> OpsApplication:
+        app = getattr(self.server, 'application', None)
+        if app is None:
+            app = OpsApplication(getattr(self.server, 'project_root', PROJECT_ROOT))
+            app.csrf_token = self.server.csrf_token
+            self.server.application = app
+        app.server_port = self.server.server_port
+        return app
 
-    def do_POST(self) -> None:
+    def _dispatch(self, method: str, body: bytes = b'') -> None:
+        reply = self._application().handle(method, self.path, dict(self.headers.items()), body)
+        self._response_headers = {key: value for key, value in reply.headers.items()
+                                  if key not in ('Content-Type', 'Cache-Control')}
+        if reply.headers.get('Content-Type', '').startswith('application/json'):
+            self._jsonify(json.loads(reply.body), reply.status)
+        else:
+            self.send_response(reply.status)
+            for key, value in reply.headers.items():
+                self.send_header(key, value)
+            self.send_header('Content-Length', str(len(reply.body)))
+            self.end_headers()
+            self.wfile.write(reply.body)
+
+    def do_GET(self) -> None:  # noqa: N802
         try:
-            payload = self._post_body()
-            if self.path == "/api/deploy":
-                self._jsonify({"ok": True, **deploy()})
-            elif self.path == "/api/stake":
-                self._jsonify({"ok": True, **stake()})
-            elif self.path == "/api/register":
-                self._jsonify({"ok": True, **register(str(payload.get("skill_dir", "")))})
-            elif self.path == "/api/agent-once":
-                body_from = payload.get("from_block")
-                self._jsonify({"ok": True, **agent_once(int(body_from) if body_from is not None else None)})
-            elif self.path == "/api/decide":
-                self._jsonify({"ok": True, **decide(str(payload.get("skill_dir", "")), str(payload.get("decision", "")))})
-            elif self.path == "/api/install":
-                self._jsonify({"ok": True, **install(str(payload.get("skill_dir", "")))})
+            self._authorize()
+            self._dispatch('GET')
+        except HTTPError as exc:
+            self._jsonify({'ok': False, 'error': str(exc)}, exc.status)
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            self._authorize(mutating=True)
+            if self.path == '/api/packages':
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                except ValueError:
+                    raise HTTPError('请求长度无效', 400) from None
+                if length < 0:
+                    raise HTTPError('请求长度无效', 400)
+                if length > 10 * 1024 * 1024:
+                    raise HTTPError('请求内容过大', 413)
+                self._dispatch('POST', self.rfile.read(length))
             else:
-                self._jsonify({"ok": False, "error": "not found"}, 404)
-        except OpsError as exc:
-            self._jsonify({"ok": False, "error": str(exc)})
-        except SubmitError as exc:
-            self._jsonify({"ok": False, "error": str(exc)})
-        except Exception as exc:
-            self._jsonify({"ok": False, "error": f"操作失败（{type(exc).__name__}）"})
+                payload = self._post_body()
+                self._dispatch('POST', json.dumps(payload).encode())
+        except HTTPError as exc:
+            self._jsonify({'ok': False, 'error': str(exc)}, exc.status)
+
+
+class OpsHTTPServer(ThreadingHTTPServer):
+    def __init__(self, address, handler=Handler, *, project_root: Path | None = None) -> None:
+        self.project_root = PROJECT_ROOT if project_root is None else project_root
+        self.application = OpsApplication(self.project_root)
+        self.csrf_token = self.application.csrf_token
+        super().__init__(address, handler)
+        self.application.server_port = self.server_port
 
 
 def main() -> None:
@@ -592,7 +725,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="ops/server.py")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
-    httpd = ThreadingHTTPServer((HOST, args.port), Handler)
+    httpd = OpsHTTPServer((HOST, args.port), Handler)
     print(f"✓ SkillGuard 操作台: http://127.0.0.1:{args.port}（仅本机）", flush=True)
     httpd.serve_forever()
 

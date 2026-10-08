@@ -31,6 +31,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -39,10 +40,13 @@ from dotenv import dotenv_values
 from eth_account import Account
 from web3 import Web3
 
-from .report import MALICIOUS, SUSPICIOUS, Report
+from .report import MALICIOUS, SAFE, SUSPICIOUS, Report, report_hash
+from .storage import save_report
 
 # 与 SkillRegistry.sol 精确对应的最小 ABI（只含用到的成员）
-SKILL_REGISTRY_ABI: list[dict[str, Any]] = [
+from .protocol import VERSION_ABI
+
+SKILL_REGISTRY_ABI: list[dict[str, Any]] = [VERSION_ABI,
     {
         "type": "function",
         "name": "AUDITOR_STAKE",
@@ -155,6 +159,8 @@ class SubmitConfig:
     private_key: str = field(repr=False)
     chain_id: int
     registry_address: str
+    deployment_block: int = 0
+    deployment_revision: str | None = None
 
 
 def _read_kv_file(path: Path) -> dict[str, str | None]:
@@ -212,11 +218,17 @@ def load_config(
     if not isinstance(registry, str) or not Web3.is_checksum_address(registry):
         raise SubmitError("部署文件缺少合法的 SkillRegistry 地址")
 
+    deployment_block = deployment.get("deploymentBlock", 0)
+    if not isinstance(deployment_block, int) or isinstance(deployment_block, bool) or deployment_block < 0:
+        raise SubmitError("部署文件缺少合法的 deploymentBlock")
+
     return SubmitConfig(
         rpc_url=rpc_url,
         private_key=private_key,
         chain_id=chain_id,
         registry_address=Web3.to_checksum_address(registry),
+        deployment_block=deployment_block,
+        deployment_revision=hashlib.sha256(json.dumps(deployment,sort_keys=True,separators=(',',':')).encode()).hexdigest(),
     )
 
 
@@ -324,6 +336,7 @@ def _send(
     value: int,
     stage: str,
     log: Callable[[str], None] | None,
+    lifecycle: Callable[[str, dict], None] | None = None,
 ) -> str:
     """取 nonce → 估 gas → 签名 → 广播 → 等回执；返回 0x 交易哈希。
 
@@ -362,6 +375,10 @@ def _send(
     except Exception as exc:
         raise SubmitError(f"{stage}：交易签名失败（{type(exc).__name__}）") from None
 
+    if lifecycle is not None:
+        expected_hash = Web3.to_hex(Web3.keccak(signed.raw_transaction))
+        lifecycle('tx_intent', {'txHash': expected_hash, 'nonce': nonce, 'transaction': tx})
+
     try:
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
     except Exception as exc:
@@ -370,6 +387,10 @@ def _send(
     tx_hash_hex = tx_hash.hex()
     if not tx_hash_hex.startswith("0x"):
         tx_hash_hex = "0x" + tx_hash_hex
+    if lifecycle is not None:
+        if tx_hash_hex != expected_hash:
+            raise SubmitError('节点返回的交易哈希与签名不符')
+        lifecycle('tx_broadcast', {'txHash': tx_hash_hex})
     if log is not None:
         log(f"[SkillGuard] {stage}：已广播交易 {tx_hash_hex}")
 
@@ -386,6 +407,8 @@ def _send(
     if receipt.get("status") != 1:
         raise SubmitError(f"{stage}：交易回执失败（status != 1），交易 {tx_hash_hex}")
 
+    if lifecycle is not None:
+        lifecycle('receipt_confirmed', {'txHash': tx_hash_hex, 'blockNumber': receipt.get('blockNumber')})
     return tx_hash_hex
 
 
@@ -403,6 +426,7 @@ def submit_report_onchain(
     metadata_hash: bytes,
     is_malicious: bool | None = None,
     log: Callable[[str], None] | None = None,
+    lifecycle: Callable[[str, dict], None] | None = None,
 ) -> list[str]:
     """预检查 → 提交报告，返回按顺序广播的交易哈希。
 
@@ -454,11 +478,57 @@ def submit_report_onchain(
             ),
             value=0,
             stage="提交审计报告（submitReport）",
-            log=log,
+            log=log, lifecycle=lifecycle,
         )
     )
 
     return tx_hashes
+
+
+def submit_and_save_report(
+    *, report: Report | dict[str, Any], reports_dir: Path, w3: Any, contract: Any,
+    account: Any, chain_id: int, human_decision: str | None = None,
+    submitter: Callable[..., list[str]] | None = None,
+    log: Callable[[str], None] | None = None,
+    lifecycle: Callable[[str, dict], None] | None = None,
+) -> tuple[dict[str, Any], list[str], Path]:
+    """统一裁决约束与归档顺序；保存实际提交的字节后再做预检查和广播。"""
+    payload = with_auditor(report, account.address)
+    level = payload.get("level")
+    if level not in (SAFE, MALICIOUS, SUSPICIOUS):
+        raise SubmitError("报告风险等级非法")
+    if human_decision is not None:
+        if human_decision not in ("safe", "malicious"):
+            raise SubmitError("humanDecision 只能为 safe 或 malicious")
+        if level != SUSPICIOUS:
+            raise SubmitError("人工裁决只对 SUSPICIOUS 生效")
+        payload["humanDecision"] = human_decision
+    elif level == SUSPICIOUS:
+        raise SubmitError("SUSPICIOUS 不能自动上链，请先人工裁决")
+
+    try:
+        code_digest = _as_bytes32(payload["codeHash"])
+        metadata_digest = _as_bytes32(payload["metadataHash"])
+        if len(code_digest) != 32 or len(metadata_digest) != 32:
+            raise ValueError("hash length")
+    except (KeyError, TypeError, ValueError):
+        raise SubmitError("报告内容哈希非法") from None
+    path, digest_hex = save_report(payload, reports_dir)
+    if lifecycle is not None:
+        lifecycle("report_saved", {"reportHash": digest_hex})
+    if log is not None:
+        log(f"[SkillGuard] 报告已保存：{path}")
+        log(f"[SkillGuard] reportHash：{digest_hex}")
+    send = submit_report_onchain if submitter is None else submitter
+    transactions = send(
+        w3=w3, contract=contract, account=account, chain_id=chain_id,
+        skill=payload["skill"], version=payload["version"], level=level,
+        report_hash=report_hash(payload), code_hash=code_digest, metadata_hash=metadata_digest,
+        is_malicious=(human_decision == "malicious") if human_decision is not None else level == MALICIOUS,
+        log=log,
+        **({"lifecycle": lifecycle} if lifecycle is not None and send is submit_report_onchain else {}),
+    )
+    return payload, transactions, path
 
 
 __all__ = [
@@ -478,5 +548,6 @@ __all__ = [
     "contract_for",
     "load_config",
     "submit_report_onchain",
+    "submit_and_save_report",
     "with_auditor",
 ]

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from .report import Finding
 from .rules import Rule
-from .skill_dir import iter_skill_files, read_text
+from .skill_dir import SkillSnapshot, iter_skill_files, safe_read_bytes
 
 
 def _clip(text: str, limit: int = 120) -> str:
@@ -20,11 +20,14 @@ def _clip(text: str, limit: int = 120) -> str:
     return line[: limit - 1] + "…"
 
 
-def scan_static(skill_dir: Path, rules: list[Rule]) -> list[Finding]:
+def scan_static(skill_dir: Path | SkillSnapshot, rules: list[Rule]) -> list[Finding]:
     """对技能源码逐文件应用静态规则，报告命中的文件与证据行。"""
     findings: list[Finding] = []
-    for rel, full in iter_skill_files(skill_dir, include_manifest=False):
-        text = read_text(full)
+    files = skill_dir.files if isinstance(skill_dir, SkillSnapshot) else (
+        (rel, safe_read_bytes(full)) for rel, full in iter_skill_files(skill_dir, include_manifest=False)
+    )
+    for rel, content in files:
+        text = content.decode("utf-8", errors="replace")
         lines = text.splitlines() or [text]
         for rule in rules:
             evidence = _first_match(rule, lines)

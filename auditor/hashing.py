@@ -33,7 +33,7 @@ from pathlib import Path
 
 from web3 import Web3
 
-from .skill_dir import iter_skill_files, safe_read_bytes
+from .skill_dir import SkillSnapshot, iter_skill_files, safe_read_bytes
 
 MANIFEST_NAME = "manifest.json"
 
@@ -43,17 +43,17 @@ def keccak_bytes(data: bytes) -> bytes:
     return Web3.keccak(data)
 
 
-def metadata_hash(skill_dir: Path) -> bytes:
+def metadata_hash(skill_dir: Path | SkillSnapshot) -> bytes:
     """manifest.json 原始文件字节的 keccak256。
 
     通过 `safe_read_bytes()` 读取：拒绝符号链接与 FIFO/设备等非常规文件，
     不跟随软链接去读取目录外目标。
     """
-    raw = safe_read_bytes(Path(skill_dir) / MANIFEST_NAME)
+    raw = skill_dir.manifest_bytes if isinstance(skill_dir, SkillSnapshot) else safe_read_bytes(Path(skill_dir) / MANIFEST_NAME)
     return keccak_bytes(raw)
 
 
-def code_hash(skill_dir: Path) -> bytes:
+def code_hash(skill_dir: Path | SkillSnapshot) -> bytes:
     """技能代码包的无歧义确定性编码的 keccak256。
 
     编码约定见模块文档。文件清单来自 `iter_skill_files`（已排除软链接、非常规文件
@@ -61,9 +61,11 @@ def code_hash(skill_dir: Path) -> bytes:
     变化也不会跟随软链接或读入 FIFO。
     """
     parts: list[bytes] = []
-    for rel, full in iter_skill_files(skill_dir, include_manifest=False):
+    files = skill_dir.files if isinstance(skill_dir, SkillSnapshot) else (
+        (rel, safe_read_bytes(full)) for rel, full in iter_skill_files(skill_dir, include_manifest=False)
+    )
+    for rel, content in files:
         path_bytes = rel.encode("utf-8")
-        content = safe_read_bytes(full)
         parts.append(len(path_bytes).to_bytes(8, "big"))
         parts.append(path_bytes)
         parts.append(len(content).to_bytes(8, "big"))

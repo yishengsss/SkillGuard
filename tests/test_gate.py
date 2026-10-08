@@ -625,7 +625,7 @@ def test_gate_error_message_carries_no_credentials(tmp_path, monkeypatch) -> Non
     assert "OSError" in output and SECRET_RPC not in output
 
 
-@pytest.mark.parametrize("reader", ["safe_read_text", "code_hash"])
+@pytest.mark.parametrize("reader", ["capture_skill", "code_hash"])
 def test_unreadable_skill_is_rejected_without_exception_details(tmp_path, monkeypatch, reader):
     project = project_dir(tmp_path)
 

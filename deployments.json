@@ -1,5 +1,6 @@
 {
-  "SkillLicense": "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-  "SkillRegistry": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-  "chainId": 31337
+  "SkillLicense": "0x8316AE44Cfc46f1c244c64A6Ad7cD06a636411c2",
+  "SkillRegistry": "0xEE41a45826e747e026B90177C086123490758731",
+  "chainId": 968,
+  "deploymentBlock": 26045862
 }

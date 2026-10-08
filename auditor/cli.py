@@ -39,12 +39,12 @@ from pathlib import Path
 
 from .llm import LLMError, cache_root_for, check_consistency
 from .llm import load_config as load_llm_config
-from .report import Report, derive_level, report_hash
+from .report import Report, derive_level
 from .scanner import scan_skill_report
 from .skill_dir import SkillDirError
 from .storage import REPORTS_DIRNAME, save_report
 from .submit import SubmitError, auditor_account, connect, contract_for, load_config
-from .submit import submit_report_onchain, with_auditor
+from .submit import submit_report_onchain, submit_and_save_report
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
@@ -179,37 +179,21 @@ def _submit_and_save(report: Report, root: Path, *, human_decision: str | None =
         deployments_path=root / "deployments.json",
     )
     account = auditor_account(config.private_key)
-    payload = with_auditor(report, account.address)
-    is_malicious = payload["level"] == "MALICIOUS"
-    if human_decision is not None:
-        payload = dict(payload)  # 防御：避免就地改传入对象
-        payload["humanDecision"] = human_decision
-        is_malicious = human_decision == "malicious"
-
     print(
-        f"[SkillGuard] 上链提交：{payload['skill']} {payload['version']} -> {payload['level']}"
+        f"[SkillGuard] 上链提交：{report.skill} {report.version} -> {report.level}"
         f"（auditor={account.address}）",
         file=sys.stderr,
     )
 
-    path, digest_hex = save_report(payload, _reports_dir(root))
-    print(f"[SkillGuard] 报告已保存：{path}", file=sys.stderr)
-    print(f"[SkillGuard] reportHash：{digest_hex}", file=sys.stderr)
-
     w3 = connect(config)
     contract = contract_for(w3, config)
-    submit_report_onchain(
+    payload, _, _ = submit_and_save_report(
+        report=report, reports_dir=_reports_dir(root), human_decision=human_decision,
+        submitter=submit_report_onchain,
         w3=w3,
         contract=contract,
         account=account,
         chain_id=config.chain_id,
-        skill=payload["skill"],
-        version=payload["version"],
-        level=payload["level"],
-        report_hash=report_hash(payload),
-        code_hash=_hex_to_bytes(payload["codeHash"]),
-        metadata_hash=_hex_to_bytes(payload["metadataHash"]),
-        is_malicious=is_malicious,
         log=lambda line: print(line, file=sys.stderr),
     )
 

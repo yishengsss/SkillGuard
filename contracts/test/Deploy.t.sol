@@ -35,6 +35,7 @@ contract DeployTest is Test {
         // 仅把产物路径换到 ./out/ 下的隔离文件
         (address reg, address lic) = deployScript.runWithKey(ANVIL_KEY, owner, outputPath);
         registry = SkillRegistry(reg);
+        vm.prank(owner);registry.configureArbitration(makeAddr("arbiter"),makeAddr("treasury"));
         license = SkillLicense(lic);
 
         minDeposit = registry.MIN_DEPOSIT();
@@ -42,6 +43,71 @@ contract DeployTest is Test {
     }
 
     /* ------------------------------------------------------------ 部署：owner */
+
+    function test_Run_RejectsMainnet() public {
+        vm.setEnv("PRIVATE_KEY", vm.toString(ANVIL_KEY));
+        vm.setEnv("DEPLOYMENTS_PATH", outputPath);
+        vm.chainId(677);
+        vm.expectRevert("Deploy: unsupported chain");
+        deployScript.run();
+    }
+
+    /* ------------------------------------------------------------ 第五步：仲裁角色 */
+
+    /// @dev v2 部署路径使用独立产物文件，避免影响本套件其他对 outputFile 的断言
+    string internal outputPathV2;
+
+    function setUp2() public returns (SkillRegistry) {
+        outputPathV2 = string.concat(vm.projectRoot(), "/out/test-deployments-v2.json");
+        address arbiter = vm.addr(0xA1);
+        address treasury = vm.addr(0xA2);
+        (address reg,) = deployScript.runWithKeyAndArbitration(ANVIL_KEY, owner, arbiter, treasury, outputPathV2);
+        return SkillRegistry(reg);
+    }
+
+    /// @dev v2.1 部署路径：同一次广播里完成接线 + configureArbitration，产物记录角色与协议版本
+    function test_RunWithKeyAndArbitration_ConfiguresRolesOnce() public {
+        address arbiter = vm.addr(0xA1);
+        address treasury = vm.addr(0xA2);
+        SkillRegistry installed = setUp2();
+        assertTrue(installed.arbitrationConfigured(), "arbitration must be configured");
+        assertEq(installed.arbiter(), arbiter);
+        assertEq(installed.treasury(), treasury);
+        assertEq(installed.protocolVersion(), 2);
+        assertEq(installed.owner(), owner);
+
+        string memory json = vm.readFile(outputPathV2);
+        assertEq(vm.parseJsonAddress(json, ".arbiter"), arbiter);
+        assertEq(vm.parseJsonAddress(json, ".treasury"), treasury);
+        assertEq(vm.parseJsonUint(json, ".protocolVersion"), 2);
+    }
+
+    function test_RunWithKeyAndArbitration_RejectsZeroOrOverlappingRoles() public {
+        string memory path = string.concat(vm.projectRoot(), "/out/test-deployments-v2.json");
+        vm.expectRevert("Deploy: zero arbitration role");
+        deployScript.runWithKeyAndArbitration(ANVIL_KEY, owner, address(0), makeAddr("treasury"), path);
+        vm.expectRevert("Deploy: zero arbitration role");
+        deployScript.runWithKeyAndArbitration(ANVIL_KEY, owner, makeAddr("arbiter"), address(0), path);
+        vm.expectRevert("Deploy: overlapping roles");
+        address same = makeAddr("both");
+        deployScript.runWithKeyAndArbitration(ANVIL_KEY, owner, same, same, path);
+        vm.expectRevert("Deploy: overlapping roles");
+        deployScript.runWithKeyAndArbitration(ANVIL_KEY, owner, owner, makeAddr("treasury"), path);
+    }
+
+    /// @notice 角色锁定与钱包签名前的配置一致性：重复配置回滚，owner 不能改成角色地址
+    function test_ArbitrationRolesAreLockedAfterConfigure() public {
+        SkillRegistry installed = setUp2();
+        address lockedTreasury = installed.treasury();
+        vm.prank(owner);
+        vm.expectRevert(SkillRegistry.ConfigurationLocked.selector);
+        installed.configureArbitration(makeAddr("other"), lockedTreasury);
+        address lockedArbiter = installed.arbiter();
+        vm.prank(owner);
+        vm.expectRevert(SkillRegistry.InvalidArbitrationRole.selector);
+        installed.transferOwnership(lockedArbiter); // 管理员不能把所有权转给受保护的仲裁地址
+        assertTrue(installed.arbitrationConfigured());
+    }
 
     function test_Deploy_OwnersMatchDeployer() public view {
         assertEq(registry.owner(), owner, "SkillRegistry owner must be the deployer");
@@ -142,7 +208,7 @@ contract DeployTest is Test {
         vm.prank(auditor);
         registry.submitReport(skillId, version, true, keccak256("malicious-report"));
 
-        assertEq(uint8(registry.getStatus(skillId, version)), uint8(SkillRegistry.Status.Malicious));
+        assertEq(uint8(registry.getStatus(skillId, version)), uint8(SkillRegistry.Status.ArbitrationPending));
         assertFalse(license.isVerified(skillId, version), "malicious verdict must not mint");
         assertEq(license.totalMinted(), 0);
     }

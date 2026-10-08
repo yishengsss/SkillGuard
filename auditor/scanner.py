@@ -19,7 +19,7 @@ from .hashing import metadata_hash as compute_metadata_hash
 from .metadata_scan import scan_metadata
 from .report import Finding, Report, build_report
 from .rules import load_known_packages, load_rules
-from .skill_dir import MANIFEST_NAME, SkillDirError, safe_read_text
+from .skill_dir import MANIFEST_NAME, SkillDirError, SkillSnapshot, capture_skill
 from .static_scan import scan_static
 from .typosquat import scan_package
 
@@ -44,7 +44,7 @@ def _validate_tool(tool: Any, index: int) -> None:
         raise SkillDirError(f"{MANIFEST_NAME} 的 {where}.inputSchema 必须是对象")
 
 
-def _load_manifest(skill_dir: Path) -> dict[str, Any]:
+def _load_manifest(skill_dir: Path | SkillSnapshot) -> dict[str, Any]:
     """读取并校验 manifest.json（形状不合规一律抛 `SkillDirError`）。
 
     形状要求（SPEC 第 4 节 manifest 格式）：
@@ -52,18 +52,10 @@ def _load_manifest(skill_dir: Path) -> dict[str, Any]:
     - `tools` 为数组；每个 tool 为对象，含非空字符串 `name`、字符串 `description`、
       对象 `inputSchema`。
 
-    文件本身用 `safe_read_text()` 读取：拒绝符号链接与 FIFO/设备等非常规文件。
+    从不可变快照读取清单；捕获时拒绝符号链接与 FIFO/设备等非常规文件。
     """
-    if not skill_dir.is_dir():
-        raise SkillDirError(f"技能目录不存在或不是目录: {skill_dir}")
-    path = skill_dir / MANIFEST_NAME
-    if path.is_symlink():
-        raise SkillDirError(f"拒绝符号链接的 {MANIFEST_NAME}: {path}")
-    if not path.exists():
-        raise SkillDirError(f"缺少 {MANIFEST_NAME}: {skill_dir}")
-    if not path.is_file():
-        raise SkillDirError(f"拒绝非常规文件（FIFO/设备等）的 {MANIFEST_NAME}: {path}")
-    raw = safe_read_text(path)
+    captured = skill_dir if isinstance(skill_dir, SkillSnapshot) else capture_skill(skill_dir)
+    raw = captured.manifest_bytes.decode("utf-8", errors="replace")
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -96,10 +88,10 @@ def scan_skill(skill_dir: str | Path, *, rules_dir: str | Path | None = None) ->
 
 
 def scan_skill_report(
-    skill_dir: str | Path, *, rules_dir: str | Path | None = None
+    skill_dir: str | Path | SkillSnapshot, *, rules_dir: str | Path | None = None
 ) -> Report:
     """扫描技能目录，返回 `Report` 对象。"""
-    root = Path(skill_dir)
+    root = skill_dir if isinstance(skill_dir, SkillSnapshot) else capture_skill(skill_dir)
     rules_path = Path(rules_dir) if rules_dir is not None else DEFAULT_RULES_DIR
 
     manifest = _load_manifest(root)

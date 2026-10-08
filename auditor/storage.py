@@ -15,6 +15,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -34,13 +36,29 @@ def save_report(
 ) -> tuple[Path, str]:
     """保存报告，返回 `(路径, 0x 报告哈希)`。
 
-    目录不存在时创建；内容为 `canonical_json(report)` 的精确字节。
-    报告哈希在**写入前**计算，保证返回的哈希与落盘字节一致。
+    原子替换文件并同步文件与父目录；任一落盘步骤失败即抛异常。
+    内容为 `canonical_json(report)` 的精确字节，返回哈希与落盘字节一致。
     """
     digest_hex = report_hash_hex(report)
     path = report_path(reports_dir, digest_hex)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(canonical_json(report))
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="wb", prefix=".report-", dir=path.parent, delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(canonical_json(report))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return path, digest_hex
 
 

@@ -143,6 +143,7 @@ contract SkillRegistryTest is Test {
 
         // 部署顺序：两个合约先各自部署，再互相接线
         vm.startPrank(owner);
+        registry.configureArbitration(makeAddr("arbiter"), makeAddr("treasury"));
         registry.setSkillLicense(address(license));
         license.setRegistry(address(registry));
         vm.stopPrank();
@@ -387,16 +388,17 @@ contract SkillRegistryTest is Test {
         assertEq(reportHash, REPORT_HASH);
         assertEq(aud, auditor);
         assertEq(pub, publisher);
-        assertEq(publisher.balance, publisherBefore + MIN_DEPOSIT, "deposit refunded to publisher");
+        assertEq(publisher.balance, publisherBefore, "refund is credit until withdrawn");
+        assertEq(registry.credits(publisher),MIN_DEPOSIT);
         assertEq(auditor.balance, auditorBefore, "auditor gets nothing on safe verdict");
         assertEq(
             address(registry).balance,
-            registry.auditorStake(auditor),
-            "registry holds only the auditor stake, deposit fully refunded"
+            registry.auditorStake(auditor)+MIN_DEPOSIT,
+            "registry holds the auditor stake and unclaimed publisher refund"
         );
     }
 
-    function test_SubmitReport_MaliciousPaysAuditor() public {
+    function test_SubmitReport_MaliciousFreezesWithoutReward() public {
         bytes32 key = _registerAndRequest(publisher, SKILL_ID, VERSION);
         _stake(auditor);
 
@@ -404,7 +406,7 @@ contract SkillRegistryTest is Test {
         uint256 auditorBefore = auditor.balance;
 
         vm.expectEmit(true, true, true, true, address(registry));
-        emit SkillRegistry.DepositSlashed(key, publisher, auditor, MIN_DEPOSIT);
+        emit SkillRegistry.ArbitrationOpened(key, auditor, REPORT_HASH,block.timestamp+7 days);
         vm.expectEmit(true, true, true, true, address(registry));
         emit SkillRegistry.ReportSubmitted(key, auditor, true, REPORT_HASH);
 
@@ -413,16 +415,16 @@ contract SkillRegistryTest is Test {
 
         (,,,, uint256 deposit, SkillRegistry.Status status, bytes32 reportHash, address aud) = registry.skills(key);
 
-        assertEq(uint8(status), uint8(SkillRegistry.Status.Malicious));
-        assertEq(deposit, 0);
+        assertEq(uint8(status), uint8(SkillRegistry.Status.ArbitrationPending));
+        assertEq(deposit, MIN_DEPOSIT);
         assertEq(reportHash, REPORT_HASH);
         assertEq(aud, auditor);
-        assertEq(auditor.balance, auditorBefore + MIN_DEPOSIT, "deposit slashed to auditor");
+        assertEq(auditor.balance, auditorBefore, "no reward on provisional verdict");
         assertEq(publisher.balance, publisherBefore, "publisher gets nothing on malicious verdict");
         assertEq(
             address(registry).balance,
-            registry.auditorStake(auditor),
-            "registry holds only the auditor stake, deposit fully slashed out"
+            registry.auditorStake(auditor)+MIN_DEPOSIT,
+            "deposit remains frozen"
         );
     }
 
@@ -493,21 +495,16 @@ contract SkillRegistryTest is Test {
         registry.submitReport(SKILL_ID, VERSION, true, REPORT_HASH);
     }
 
-    function test_SubmitReport_RevertsWhenPublisherRejectsRefund() public {
+    function test_SubmitReport_CreditsPublisherThatRejectsRefund() public {
         NoReceivePublisher stub = new NoReceivePublisher(registry);
         stub.registerAndRequest{value: MIN_DEPOSIT}(SKILL_ID, VERSION);
         _stake(auditor);
-
-        vm.prank(auditor);
-        vm.expectRevert(SkillRegistry.TransferFailed.selector);
-        registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
-
-        // 整笔交易回滚：状态、押金、许可证全部保持原样
-        (,,,, uint256 deposit, SkillRegistry.Status status,,) = registry.skills(registry.keyOf(SKILL_ID, VERSION));
-        assertEq(uint8(status), uint8(SkillRegistry.Status.AuditRequested));
-        assertEq(deposit, MIN_DEPOSIT);
-        assertEq(license.totalMinted(), 0, "NFT minted before the failed refund must roll back too");
-        assertFalse(license.isVerified(SKILL_ID, VERSION));
+        vm.prank(auditor);registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
+        (,,,, uint256 deposit,SkillRegistry.Status status,,)=registry.skills(registry.keyOf(SKILL_ID,VERSION));
+        assertEq(deposit,0);assertEq(uint8(status),uint8(SkillRegistry.Status.Verified));
+        assertEq(registry.credits(address(stub)),MIN_DEPOSIT);assertEq(license.totalMinted(),1);
+        vm.prank(address(stub));vm.expectRevert(SkillRegistry.TransferFailed.selector);registry.withdrawFunds();
+        assertEq(registry.credits(address(stub)),MIN_DEPOSIT);
     }
 
     /// @notice 不实现 onERC721Received 且拒收 ETH 的 publisher：铸造就会失败
@@ -541,11 +538,11 @@ contract SkillRegistryTest is Test {
 
         reentrant.beginAudit("skill-a", VERSION);
 
-        assertTrue(reentrant.reentryAttempted(), "receive() should have tried to re-enter");
+        assertFalse(reentrant.reentryAttempted(), "report causes no transfer callback");
         assertFalse(reentrant.reentrySucceeded(), "ReentrancyGuard must block the nested call");
         assertEq(
             uint8(registry.getStatus("skill-a", VERSION)),
-            uint8(SkillRegistry.Status.Malicious),
+            uint8(SkillRegistry.Status.ArbitrationPending),
             "outer call still settles"
         );
         assertEq(
@@ -568,8 +565,9 @@ contract SkillRegistryTest is Test {
         vm.prank(auditor);
         registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
 
-        assertEq(publisher.balance, before + deposit);
-        assertEq(address(registry).balance, registry.auditorStake(auditor));
+        assertEq(publisher.balance,before);
+        assertEq(registry.credits(publisher),deposit);
+        assertEq(address(registry).balance, registry.auditorStake(auditor)+deposit);
     }
 
     function testFuzz_SubmitReport_MaliciousRoutesDepositToAuditor(uint96 rawDeposit) public {
@@ -585,8 +583,8 @@ contract SkillRegistryTest is Test {
         vm.prank(auditor);
         registry.submitReport(SKILL_ID, VERSION, true, REPORT_HASH);
 
-        assertEq(auditor.balance, before + deposit);
-        assertEq(address(registry).balance, registry.auditorStake(auditor));
+        assertEq(auditor.balance,before);
+        assertEq(address(registry).balance, registry.auditorStake(auditor)+deposit);
     }
 
     /* ------------------------------------------------- slashAuditor */
@@ -696,7 +694,7 @@ contract SkillRegistryTest is Test {
         _stake(auditor);
         vm.prank(auditor);
         registry.submitReport(SKILL_ID, VERSION, true, REPORT_HASH);
-        assertEq(uint8(registry.getStatus(SKILL_ID, VERSION)), uint8(SkillRegistry.Status.Malicious));
+        assertEq(uint8(registry.getStatus(SKILL_ID, VERSION)), uint8(SkillRegistry.Status.ArbitrationPending));
     }
 
     function test_MaliciousVerdictDoesNotAffectOtherVersion() public {
@@ -707,7 +705,7 @@ contract SkillRegistryTest is Test {
         vm.prank(auditor);
         registry.submitReport(SKILL_ID, "1.0.0", true, REPORT_HASH);
 
-        assertEq(uint8(registry.getStatus(SKILL_ID, "1.0.0")), uint8(SkillRegistry.Status.Malicious));
+        assertEq(uint8(registry.getStatus(SKILL_ID, "1.0.0")), uint8(SkillRegistry.Status.ArbitrationPending));
         assertEq(
             uint8(registry.getStatus(SKILL_ID, "2.0.0")),
             uint8(SkillRegistry.Status.Registered),
@@ -787,6 +785,7 @@ contract SkillRegistryTest is Test {
 
     function test_SubmitReport_SafeRevertsWhenLicenseNotWired() public {
         SkillRegistry bare = new SkillRegistry(owner);
+        vm.prank(owner);bare.configureArbitration(makeAddr("arbiter"),makeAddr("treasury"));
         vm.deal(publisher, 10 ether);
 
         vm.prank(publisher);
@@ -806,6 +805,7 @@ contract SkillRegistryTest is Test {
 
     function test_SubmitReport_MaliciousStillWorksWithoutLicenseWired() public {
         SkillRegistry bare = new SkillRegistry(owner);
+        vm.prank(owner);bare.configureArbitration(makeAddr("arbiter"),makeAddr("treasury"));
         vm.deal(publisher, 10 ether);
 
         vm.prank(publisher);
@@ -819,7 +819,7 @@ contract SkillRegistryTest is Test {
         vm.prank(auditor);
         bare.submitReport(SKILL_ID, VERSION, true, REPORT_HASH);
 
-        assertEq(uint8(bare.getStatus(SKILL_ID, VERSION)), uint8(SkillRegistry.Status.Malicious));
+        assertEq(uint8(bare.getStatus(SKILL_ID, VERSION)), uint8(SkillRegistry.Status.ArbitrationPending));
     }
 
     function test_SubmitReport_SafeStillRefundsDepositWhenMinting() public {
@@ -830,7 +830,8 @@ contract SkillRegistryTest is Test {
         vm.prank(auditor);
         registry.submitReport(SKILL_ID, VERSION, false, REPORT_HASH);
 
-        assertEq(publisher.balance, publisherBefore + MIN_DEPOSIT, "deposit refunded alongside mint");
+        assertEq(publisher.balance,publisherBefore);
+        assertEq(registry.credits(publisher),MIN_DEPOSIT);
     }
 
     function test_SubmitReport_MintCallbackCannotReenter() public {

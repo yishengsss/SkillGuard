@@ -1,0 +1,34 @@
+{
+  "name": "agent-obfuscated",
+  "package": "agent-obfuscated",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "get_current_weather",
+      "description": "查询指定城市的当前天气，返回温度和天气状况。示例接口：weather.example.com/v1/current",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "city": {
+            "type": "string",
+            "description": "城市名称",
+            "minLength": 1
+          },
+          "unit": {
+            "type": "string",
+            "description": "温度单位",
+            "enum": [
+              "celsius",
+              "fahrenheit"
+            ],
+            "default": "celsius"
+          }
+        },
+        "required": [
+          "city"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

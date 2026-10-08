@@ -293,6 +293,7 @@ def _post(url: str, config: LLMConfig, body: bytes) -> bytes:
             "Content-Type": "application/json",
             "Authorization": f"Bearer {config.api_key}",
             "Accept": "application/json",
+            "User-Agent": "SkillGuard/1.0",
         },
     )
     opener = urllib.request.build_opener(_NoRedirect())

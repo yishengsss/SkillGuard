@@ -22,18 +22,33 @@ contract Deploy is Script {
     /// @return registry 已部署的 SkillRegistry 地址
     /// @return license 已部署的 SkillLicense 地址
     function run() external returns (address registry, address license) {
+        require(block.chainid == 31337 || block.chainid == 11155111 || block.chainid == 968,
+            "Deploy: unsupported chain");
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
+
+        // 第五步（协议 2）：同时配置 ARBITER_ADDRESS 与 TREASURY_ADDRESS 才生效；
+        // 缺省保持旧部署语义（deployments.json 的 protocolVersion 记为 1）
+        address arbiter = vm.envOr("ARBITER_ADDRESS", address(0));
+        address treasury = vm.envOr("TREASURY_ADDRESS", address(0));
+        if (arbiter != address(0) && treasury != address(0)) {
+            string memory outputPath = vm.envOr("DEPLOYMENTS_PATH", deploymentsPath());
+            (registry, license) = runWithKeyAndArbitration(deployerPrivateKey, vm.addr(deployerPrivateKey), arbiter, treasury, outputPath);
+            console2.log("arbitration    :", arbiter, treasury);
+            console2.log("protocolVersion:", uint256(2));
+            return (registry, license);
+        }
 
         vm.startBroadcast(deployerPrivateKey);
         (registry, license) = deployAndWire(vm.addr(deployerPrivateKey));
         vm.stopBroadcast();
 
-        writeDeployments(deploymentsPath(), block.chainid, registry, license);
+        string memory outputPath = vm.envOr("DEPLOYMENTS_PATH", deploymentsPath());
+        writeDeployments(outputPath, block.chainid, registry, license);
 
         console2.log("chainId      :", block.chainid);
         console2.log("SkillRegistry:", registry);
         console2.log("SkillLicense :", license);
-        console2.log("deployments  :", deploymentsPath());
+        console2.log("deployments  :", outputPath);
     }
 
     /// @notice 用指定私钥广播部署并写产物；测试复用此入口，路径换成隔离文件
@@ -49,6 +64,22 @@ contract Deploy is Script {
         vm.stopBroadcast();
 
         writeDeployments(outputPath, block.chainid, registry, license);
+    }
+
+    /// @notice 协议 2 部署：接线后同一次广播完成仲裁角色第五步配置，产物记录角色与协议版本
+    /// @dev 角色校验由合约 configureArbitration 的一次性锁定与分离检查执行；这里只做非零提醒
+    function runWithKeyAndArbitration(
+        uint256 deployerPrivateKey, address owner, address arbiter, address treasury, string memory outputPath
+    ) public returns (address registry, address license) {
+        require(arbiter != address(0) && treasury != address(0), "Deploy: zero arbitration role");
+        require(arbiter != treasury && arbiter != owner && treasury != owner, "Deploy: overlapping roles");
+
+        vm.startBroadcast(deployerPrivateKey);
+        (registry, license) = deployAndWire(owner);
+        SkillRegistry(registry).configureArbitration(arbiter, treasury);
+        vm.stopBroadcast();
+
+        writeDeploymentsV2(outputPath, block.chainid, registry, license, arbiter, treasury);
     }
 
     /// @notice 部署两个合约并双向接线
@@ -81,6 +112,22 @@ contract Deploy is Script {
         vm.serializeUint(obj, "chainId", chainId);
         vm.serializeAddress(obj, "SkillRegistry", registry);
         string memory json = vm.serializeAddress(obj, "SkillLicense", license);
+
+        vm.writeJson(json, outputPath);
+    }
+
+    /// @notice 协议 2 的产物：{chainId, SkillRegistry, SkillLicense, protocolVersion, arbiter, treasury}
+    function writeDeploymentsV2(
+        string memory outputPath, uint256 chainId, address registry, address license, address arbiter, address treasury
+    ) public {
+        string memory obj = "deployments";
+
+        vm.serializeUint(obj, "chainId", chainId);
+        vm.serializeAddress(obj, "SkillRegistry", registry);
+        vm.serializeAddress(obj, "SkillLicense", license);
+        vm.serializeUint(obj, "protocolVersion", 2);
+        vm.serializeAddress(obj, "arbiter", arbiter);
+        string memory json = vm.serializeAddress(obj, "treasury", treasury);
 
         vm.writeJson(json, outputPath);
     }

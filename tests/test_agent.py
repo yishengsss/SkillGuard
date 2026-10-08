@@ -66,6 +66,9 @@ class RecordingSubmitter:
 
     def __call__(self, **kwargs) -> list[str]:  # type: ignore[no-untyped-def]
         self.calls.append(kwargs)
+        contract=kwargs['contract'];entry=list(contract.entry)
+        entry[4]=0;entry[5]=4 if kwargs['is_malicious'] else 3;entry[6]=kwargs['report_hash'];entry[7]=kwargs['account'].address
+        contract.entry=tuple(entry)
         return ["0x" + "f" * 64]
 
 
@@ -90,6 +93,7 @@ def make_ctx(tmp_path: Path, *, entry_status: int = 2, submitter) -> AgentContex
 
 class FakeEthStub:
     block_number = 10
+    def get_code(self,*args,**kwargs):return b"code"
 
 
 def bind_entry(ctx: AgentContext, reg: Registration, *, status: int = 2) -> None:
@@ -189,8 +193,8 @@ def test_source_outside_root_skips(tmp_path: Path) -> None:
     submitter = RecordingSubmitter()
     ctx = make_ctx(tmp_path, entry_status=2, submitter=submitter)
     outside = Registration(skill="unit-x", version="1.0.0", repo="file:///etc", code_hash=b"\x00" * 32, metadata_hash=b"\x00" * 32)
-    outcome = agent_mod.process_request(ctx, AuditRequest(key=b"\x05" * 32, block=9), outside)
-    assert "跳过" in outcome
+    with pytest.raises(agent_mod.AgentError, match="来源不可用"):
+        agent_mod.process_request(ctx, AuditRequest(key=b"\x05" * 32, block=9), outside)
     assert submitter.calls == []
     assert ctx.submitter is not None
 
@@ -249,7 +253,7 @@ def test_failed_request_does_not_break_batch(tmp_path: Path) -> None:
 
     new_cursor, _ = run_once(ctx, 0)
     assert len(submitter.calls) == 1  # 失败的那个没有提交
-    assert new_cursor == 6
+    assert new_cursor == 3  # 保留最早失败区块，即便后续请求已经成功。
 
 
 # --------------------------------------------------------------------------
@@ -449,4 +453,3 @@ def test_agent_end_to_end_on_anvil(anvil_chain, tmp_path: Path) -> None:
     for name, (_source, expected_level) in skills.items():
         status = int(contract.functions.getStatus(name, "1.0.0").call())
         assert status == (3 if expected_level == SAFE else 4), name
-

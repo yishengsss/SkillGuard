@@ -11,3 +11,5 @@ cache/
 reports/
 .DS_Store
 logs/
+
+acceptance/

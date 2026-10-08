@@ -8,8 +8,8 @@
 | 工具 | 行为 |
 |---|---|
 | `check_skill(skill_dir)` | 复用 `gate.check_install`：查许可证、链上状态，比对本地与链上 codeHash / metadataHash |
-| `install_skill(skill_dir)` | 先做同样检查；只有 `allowed` 才把技能目录复制到 `SKILLGUARD_INSTALL_DIR`（默认
-  `<项目根>/installed/<name>-<version>/`），复制后**对副本重算哈希再核对一次**，不一致就删除副本 |
+| `install_skill(skill_dir)` | 检查不可变快照；只有 `allowed` 才写审计范围内的文件到 staging，
+  复检后替换 `SKILLGUARD_INSTALL_DIR`（默认 `<项目根>/installed/<name>-<version>/`），失败保留原安装 |
 
 失败即拒绝：RPC 不通、chainId 不一致、地址无字节码、manifest 畸形……全部
 `allowed=false / installed=false`，`reason` 说明原因（不含异常原文/密钥/RPC URL）。
@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -42,9 +43,9 @@ from gate.gate import (  # noqa: E402
     GateError,
     check_install,
     load_gate_config,
+    read_manifest_identity,
 )
-from auditor.hashing import code_hash as compute_code_hash  # noqa: E402
-from auditor.hashing import metadata_hash as compute_metadata_hash  # noqa: E402
+from auditor.skill_dir import MANIFEST_NAME, SkillSnapshot, capture_skill  # noqa: E402
 
 INSTALL_DIR_ENV = "SKILLGUARD_INSTALL_DIR"
 INSTALL_DIRNAME = "installed"
@@ -72,15 +73,8 @@ def _install_dir(project_root: Path | None = None) -> Path:
 
 def _safe_component(value: str) -> str | None:
     """把来自 manifest（不可信输入）的 name/version 限制成安全的路径分段。"""
-    text = (value or "").strip()
-    if not text or len(text) > 64:
-        return None
-    allowed = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
-    if not all(ch in allowed for ch in text):
-        return None
-    if text.startswith(".") or "/" in text or "\\" in text:
-        return None
-    return text
+    from gate.identity import safe_identity_component
+    return safe_identity_component(value,64)
 
 
 def _result_base(skill: str, version: str, config: GateConfig | None) -> dict[str, Any]:
@@ -94,7 +88,7 @@ def _result_base(skill: str, version: str, config: GateConfig | None) -> dict[st
     }
 
 
-def check_skill(skill_dir: str, *, project_root: Path | None = None) -> dict[str, Any]:
+def check_skill(skill_dir: str | SkillSnapshot, *, project_root: Path | None = None) -> dict[str, Any]:
     """只读查链并核对哈希；失败即拒绝。"""
     root = PROJECT_ROOT if project_root is None else project_root
     result: dict[str, Any]
@@ -113,7 +107,8 @@ def check_skill(skill_dir: str, *, project_root: Path | None = None) -> dict[str
         return result
 
     try:
-        decision = check_install(Path(skill_dir), config)
+        source = skill_dir if isinstance(skill_dir, SkillSnapshot) else Path(skill_dir)
+        decision = check_install(source, config)
     except GateError as exc:
         result = _result_base("", "", config)
         result["allowed"] = False
@@ -141,18 +136,26 @@ def _decision_to_result(decision: Decision, config: GateConfig) -> dict[str, Any
     }
 
 
-def install_skill(skill_dir: str, *, project_root: Path | None = None, install_root: Path | None = None) -> dict[str, Any]:
-    """检查 + 复制安装；只有 `allowed` 才复制，复制后对副本重算哈希再核对一次。"""
+def install_skill(skill_dir: str | SkillSnapshot, *, project_root: Path | None = None, install_root: Path | None = None) -> dict[str, Any]:
+    """检查快照、写入审计文件并复检；通过后替换正式安装，失败保留旧版本。"""
     root = PROJECT_ROOT if project_root is None else project_root
     base_root = install_root if install_root is not None else _install_dir(root)
 
-    first = check_skill(skill_dir, project_root=root)
+    try:
+        captured = skill_dir if isinstance(skill_dir, SkillSnapshot) else capture_skill(skill_dir)
+    except Exception as exc:
+        result = _result_base("", "", None)
+        result.update(allowed=False, installed=False, installed_path=None,
+                      reason=f"技能快照读取失败（{type(exc).__name__}）")
+        return result
+    first = check_skill(captured, project_root=root)
     if not first.get("allowed"):
         first["installed"] = False
         first["installed_path"] = None
         return first
 
-    skill_component = _safe_component(str(first.get("skill", "")))
+    from gate.identity import safe_identity_component
+    skill_component = safe_identity_component(str(first.get("skill", "")),128)
     version_component = _safe_component(str(first.get("version", "")))
     if skill_component is None or version_component is None:
         result = dict(first)
@@ -162,42 +165,47 @@ def install_skill(skill_dir: str, *, project_root: Path | None = None, install_r
         return result
 
     destination = base_root / f"{skill_component}-{version_component}"
+    result = dict(first, installed=False, installed_path=None)
+    backup: Path | None = None
     try:
-        if destination.exists():
-            shutil.rmtree(destination)
-        shutil.copytree(Path(skill_dir), destination)
-    except (OSError, shutil.Error) as exc:
-        result = dict(first)
-        result["installed"] = False
-        result["installed_path"] = None
-        result["reason"] = f"复制技能目录失败（{type(exc).__name__}）"
-        return result
-
-    # 复制后对副本重算哈希，再与链上核对一次（SPEC 9.2）
-    try:
+        if base_root.is_symlink() or destination.is_symlink():
+            raise GateError("安装目标不能是符号链接")
+        base_root.mkdir(parents=True, exist_ok=True)
         config = load_gate_config(root)
-        copy_check = check_install(destination, config)
-    except GateError as exc:
-        _safe_remove(destination)
-        result = dict(first)
-        result["installed"] = False
-        result["installed_path"] = None
-        result["reason"] = f"副本复检失败：{exc}"
-        return result
+        with tempfile.TemporaryDirectory(prefix=".stage-", dir=base_root) as temporary:
+            stage = Path(temporary) / "package"
+            stage.mkdir()
+            (stage / MANIFEST_NAME).write_bytes(captured.manifest_bytes)
+            (stage / MANIFEST_NAME).chmod(captured.manifest_mode)
+            modes = dict(captured.file_modes)
+            for relative, content in captured.files:
+                target = stage / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(content)
+                target.chmod(modes.get(relative, 0o644))
+            copy_check = check_install(stage, config)
+            if not copy_check.allowed:
+                result["reason"] = f"副本与链上登记不一致：{copy_check.reason}"
+                return result
+            if destination.exists():
+                if read_manifest_identity(destination) != (str(first["skill"]), str(first["version"])):
+                    raise GateError("安装目标属于另一技能版本，拒绝替换")
+                backup = Path(tempfile.mkdtemp(prefix=".previous-", dir=base_root))
+                backup.rmdir()
+                os.replace(destination, backup)
+            try:
+                os.replace(stage, destination)
+            except OSError:
+                if backup is not None:
+                    os.replace(backup, destination)
+                    backup = None
+                raise
+        if backup is not None:
+            _safe_remove(backup)
     except Exception as exc:
-        _safe_remove(destination)
-        result = dict(first)
-        result["installed"] = False
-        result["installed_path"] = None
-        result["reason"] = f"副本复检未完成（{type(exc).__name__}）"
-        return result
-
-    if not copy_check.allowed:
-        _safe_remove(destination)
-        result = dict(first)
-        result["installed"] = False
-        result["installed_path"] = None
-        result["reason"] = f"副本与链上登记不一致，已删除副本：{copy_check.reason}"
+        result["reason"] = f"复制或复检安装失败（{type(exc).__name__}）"
+        if backup is not None and backup.exists():
+            result["reason"] += f"；原安装保留于 {backup}"
         return result
 
     result = dict(first)
@@ -208,7 +216,9 @@ def install_skill(skill_dir: str, *, project_root: Path | None = None, install_r
 
 def _safe_remove(path: Path) -> None:
     try:
-        if path.exists():
+        if path.is_symlink():
+            path.unlink()
+        elif path.exists():
             shutil.rmtree(path)
     except OSError:
         pass  # 删除失败如实保留现场，不允许"看起来安装成功"

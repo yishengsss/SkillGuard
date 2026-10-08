@@ -29,6 +29,9 @@ if str(ROOT) not in sys.path:
 
 CLI_PROJECT_ENV = "SKILLGUARD_TEST_PROJECT"
 _CONFIG_ENV_VARS = (
+    "PRIVATE_KEY",
+    "OWNER_PRIVATE_KEY",
+    "BOT_OWNER_PRIVATE_KEY",
     "RPC_URL",
     "AUDITOR_PRIVATE_KEY",
     # LLM_* 同理：开发机若导出了真实 key，子进程 `--llm` 测试可能真的外连计费。
@@ -37,6 +40,17 @@ _CONFIG_ENV_VARS = (
     "LLM_MODEL",
 )
 _COPIED = ("auditor", "rules", "samples")
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'anvil: isolated local-chain integration')
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if ('anvil_chain' in item.fixturenames or 'anvil' in item.fixturenames
+                or item.name == 'test_ops_end_to_end_on_anvil'):
+            item.add_marker(pytest.mark.anvil)
 
 
 def cli_project_root() -> Path:

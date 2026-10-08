@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import stat
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 SENSITIVE_DIRS = frozenset({".git", ".cache", "__pycache__"})
@@ -53,13 +54,106 @@ def _require_regular_file(path: Path) -> None:
 def safe_read_bytes(path: Path) -> bytes:
     """安全读取常规文件的原始字节；拒绝软链接与非常规文件。"""
     _require_regular_file(path)
-    return path.read_bytes()
+    return _read_regular(path)
 
 
 def safe_read_text(path: Path, *, errors: str = "replace") -> str:
     """安全读取常规文件的文本；拒绝软链接与非常规文件。"""
-    _require_regular_file(path)
-    return path.read_text(encoding="utf-8", errors=errors)
+    return safe_read_bytes(path).decode("utf-8", errors=errors)
+
+
+def _read_regular(path: str | Path, *, dir_fd: int | None = None) -> bytes:
+    return _read_file(path, dir_fd=dir_fd)[0]
+
+
+def _read_file(path: str | Path, *, dir_fd: int | None = None) -> tuple[bytes, int]:
+    """打开时拒绝链接；用已打开的描述符确认类型，避免检查后换成 FIFO/链接。"""
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        if not stat.S_ISREG(os.stat(path, dir_fd=dir_fd, follow_symlinks=False).st_mode):
+            raise SkillDirError(f"拒绝符号链接或非常规文件: {Path(path).name}")
+        fd = os.open(path, flags, dir_fd=dir_fd)
+    except PermissionError:
+        raise
+    except OSError as exc:
+        raise SkillDirError(f"无法安全读取常规文件: {Path(path).name}（{type(exc).__name__}）") from None
+    with os.fdopen(fd, "rb") as handle:
+        mode = os.fstat(handle.fileno()).st_mode
+        if not stat.S_ISREG(mode):
+            raise SkillDirError(f"拒绝非常规文件: {Path(path).name}")
+        return handle.read(), stat.S_IMODE(mode) & 0o777
+
+
+@dataclass(frozen=True)
+class SkillSnapshot:
+    """审计与安装共同使用的不可变字节；只包含顶层清单和参与 codeHash 的文件。"""
+
+    manifest_bytes: bytes
+    files: tuple[tuple[str, bytes], ...]
+    file_modes: tuple[tuple[str, int], ...] = ()
+    manifest_mode: int = 0o644
+
+
+def _open_skill_root(root: Path, source_root: Path | None) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if source_root is None:
+        return os.open(root, flags)
+
+    # 仅解析可信根；源路径各分段必须相对根逐一打开，不能重新 resolve 后跟随新链接。
+    anchor = source_root.resolve(strict=True)
+    try:
+        relative = root.relative_to(anchor)
+    except ValueError:
+        raise SkillDirError("技能来源越出可信根目录") from None
+    if not relative.parts or ".." in relative.parts:
+        raise SkillDirError("技能来源必须位于可信根目录内")
+    fd = os.open(anchor, flags)
+    try:
+        for component in relative.parts:
+            child_fd = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def capture_skill(skill_dir: str | Path, *, source_root: Path | None = None) -> SkillSnapshot:
+    """只读取一次包内字节；可从可信根逐段定位，拒绝来源祖先与包内链接。"""
+    try:
+        root_fd = _open_skill_root(Path(skill_dir), source_root)
+    except PermissionError:
+        raise
+    except OSError as exc:
+        raise SkillDirError(f"无法安全打开技能目录（{type(exc).__name__}）") from None
+    try:
+        manifest_bytes, manifest_mode = _read_file(MANIFEST_NAME, dir_fd=root_fd)
+        files: list[tuple[str, bytes]] = []
+        modes: list[tuple[str, int]] = []
+
+        def fail_walk(exc: OSError) -> None:
+            raise exc
+
+        for current, dirnames, filenames, directory_fd in os.fwalk(
+            ".", topdown=True, follow_symlinks=False, dir_fd=root_fd, onerror=fail_walk
+        ):
+            dirnames[:] = [
+                name for name in dirnames if name not in SENSITIVE_DIRS
+                and stat.S_ISDIR(os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode)
+            ]
+            for name in filenames:
+                if _is_skipped_file(name) or name == MANIFEST_NAME:
+                    continue
+                if not stat.S_ISREG(os.stat(name, dir_fd=directory_fd, follow_symlinks=False).st_mode):
+                    continue
+                relative = (Path(current) / name).as_posix()
+                content, mode = _read_file(name, dir_fd=directory_fd)
+                files.append((relative, content))
+                modes.append((relative, mode))
+        return SkillSnapshot(manifest_bytes, tuple(sorted(files)), tuple(sorted(modes)), manifest_mode)
+    finally:
+        os.close(root_fd)
 
 
 def iter_skill_files(skill_dir: Path, *, include_manifest: bool) -> Iterator[tuple[str, Path]]:
@@ -112,6 +206,8 @@ __all__ = [
     "SENSITIVE_DIRS",
     "SENSITIVE_PREFIXES",
     "SkillDirError",
+    "SkillSnapshot",
+    "capture_skill",
     "iter_skill_files",
     "read_text",
     "safe_read_bytes",

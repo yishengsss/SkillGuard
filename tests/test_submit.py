@@ -113,7 +113,7 @@ class FakeFunction:
         self._name = name
         self._args = args
 
-    def call(self):
+    def call(self, **kwargs):
         self._contract.calls.append((self._name, self._args))
         handler = self._contract.handlers[self._name]
         return handler(*self._args)
@@ -150,6 +150,7 @@ class FakeContract:
         self.estimates: list[tuple[str, dict]] = []
         self.sends: list[tuple[str, tuple, dict]] = []
         self.handlers = {
+            "protocolVersion":lambda *_:1,
             "keyOf": lambda *_: key,
             "skills": lambda *_: self.entry,
             "auditorStake": lambda *_: staked,
@@ -197,7 +198,7 @@ class FakeEth:
     def is_connected(self) -> bool:
         return self.connected
 
-    def get_code(self, address: str) -> HexBytes:
+    def get_code(self, address: str, **kwargs) -> HexBytes:
         return HexBytes(self.code)
 
     def get_transaction_count(self, address: str, block_identifier: str = "latest") -> int:
@@ -664,6 +665,7 @@ def test_connect_uses_http_provider_with_timeout(tmp_path: Path, config_env) -> 
 def test_contract_for_uses_minimal_abi() -> None:
     names = {item["name"] for item in submit_mod.SKILL_REGISTRY_ABI}
     assert names == {
+        "protocolVersion",
         "keyOf",
         "skills",
         "AUDITOR_STAKE",
@@ -843,7 +845,7 @@ def test_report_save_failure_prevents_broadcast(tmp_path, monkeypatch, capsys, c
     patch_network(monkeypatch, ctx)
     def unavailable(*args, **kwargs):
         raise OSError("disk unavailable")
-    monkeypatch.setattr(cli_mod, "save_report", unavailable)
+    monkeypatch.setattr(submit_mod, "save_report", unavailable)
     assert main([str(tmp_path / "skill"), "--submit"], project_root=project) != 0
     output = capsys.readouterr()
     assert output.out == ""

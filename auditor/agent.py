@@ -15,10 +15,8 @@
 - 不 import / 不执行技能代码；不调用 LLM；不打印私钥 / RPC URL。
 
 游标（SPEC 8.2）：存 `.cache/agent_cursor.json`，重启后从这里继续；语义为
-"下一个要扫描的区块号"。本实现按"逐事件成功即推进"处理：某事件处理失败时不越过
-该事件的区块（重启后会再看到），已成功处理的写回最大区块 + 1。已知收窄：若同
-一批次里更晚区块的成功处理发生，早些失败的事件会丢——本地链演示环境概率可忽略，
-局限如实说明，不夸大。
+"下一个要扫描的区块号"。任一事件失败时保留最早失败区块，之后成功的事件仍照常
+处理；重读时用链上状态跳过已提交的版本。没有失败时推进到本轮已读取范围之后。
 
 已知局限（SPEC 11.2 相关，如实陈述）：单个审计者即可定案；合约不校验结论正确性；
 无挑战期。
@@ -35,11 +33,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from .hashing import code_hash as compute_code_hash
-from .hashing import metadata_hash as compute_metadata_hash
 from .report import MALICIOUS, SUSPICIOUS, canonical_json, report_hash
 from .scanner import scan_skill_report
-from .skill_dir import MANIFEST_NAME, safe_read_text
+from .skill_dir import MANIFEST_NAME, SkillSnapshot, capture_skill, safe_read_text
 from .submit import (
     SubmitError,
     auditor_account,
@@ -47,6 +43,7 @@ from .submit import (
     contract_for,
     load_config,
     submit_report_onchain,
+    submit_and_save_report,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -98,11 +95,17 @@ class AgentContext:
     chain_id: int
     fetch_requests: Callable[[Any, int, str], list[AuditRequest]]  # 必须显式注入
     fetch_registrations: Callable[[Any, int, str], dict[bytes, Registration]]  # 必须显式注入
-    scanner: Callable[[Path], Any]
+    scanner: Callable[[SkillSnapshot], Any]
     w3: Any = None
     log: Callable[[str], None] = lambda line: None  # noqa: E731
     submitter: Callable[..., list[str]] = submit_report_onchain
     outcomes: list[str] = field(default_factory=list)  # 测试观察用
+    deployment_block: int = 0
+    journal: Any = None
+    run_id: str | None = None
+    stop_requested: Callable[[], bool] = lambda: False
+    deployment_revision: str | None = None
+    reasoner: Callable | None = None
 
 
 # --------------------------------------------------------------------------
@@ -112,11 +115,17 @@ def cursor_path(root: Path) -> Path:
     return root / CURSOR_REL_PATH
 
 
-def read_cursor(root: Path) -> int:
+def read_cursor(root: Path, chain_id: int | None = None, registry: str | None = None) -> int:
     """读游标（下一个要扫描的区块）；缺失/非法视为 0。"""
     path = cursor_path(root)
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            return 0
+        if chain_id is not None and value.get("chainId") != chain_id:
+            return 0
+        if registry is not None and str(value.get("registry", "")).lower() != registry.lower():
+            return 0
         block = value.get("cursor")
         if isinstance(block, int) and not isinstance(block, bool) and block >= 0:
             return block
@@ -125,10 +134,15 @@ def read_cursor(root: Path) -> int:
     return 0
 
 
-def write_cursor(root: Path, block: int) -> None:
+def write_cursor(root: Path, block: int, chain_id: int | None = None, registry: str | None = None) -> None:
     path = cursor_path(root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"cursor": block}), encoding="utf-8")
+    data = {"cursor": block}
+    if chain_id is not None:
+        data["chainId"] = chain_id
+    if registry is not None:
+        data["registry"] = registry
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 # --------------------------------------------------------------------------
@@ -192,6 +206,36 @@ def read_manifest_json(source: Path) -> dict[str, Any]:
 # 单请求处理
 # --------------------------------------------------------------------------
 def process_request(ctx: AgentContext, request: AuditRequest, registration: Registration | None) -> str:
+    if ctx.journal is None:
+        return _process_request(ctx,request,registration)
+    from .recovery import recover_submission
+    key='0x'+request.key.hex()
+    registry=ctx.contract.address
+    for previous in ctx.journal.runs(ctx.chain_id,registry,key):
+        events=ctx.journal.events(previous['runId'])
+        if any(e['stage']=='tx_intent' for e in events):
+            recovered=recover_submission(ctx,previous['runId'],ctx.journal)
+            if recovered=='confirmed': return '原交易已确认'
+            if recovered!='absent': raise AgentError('原交易待确认或需人工处理，禁止新 nonce 重发')
+        if previous['stage']=='waiting_human': return 'SUSPICIOUS 已落盘待裁决'
+    ctx.run_id=ctx.journal.begin(ctx.chain_id,registry,key,request.block)
+    ctx.journal.emit(ctx.run_id,'request_received',{'key':key,'requestBlock':request.block})
+    try:
+        return _process_request(ctx,request,registration)
+    except Exception as exc:
+        from .llm import LLMError
+        failure={'category':type(exc).__name__}
+        if isinstance(exc,LLMError): failure['reason']=str(exc)
+        ctx.journal.emit(ctx.run_id,'audit_failed',failure)
+        raise
+
+
+def _event(ctx,stage,payload):
+    if ctx.journal is not None and ctx.run_id is not None:
+        ctx.journal.emit(ctx.run_id,stage,payload)
+
+
+def _process_request(ctx: AgentContext, request: AuditRequest, registration: Registration | None) -> str:
     """处理一条审计请求；返回给操作者看的结果短语。失败抛异常由调用方记日志。"""
     if registration is None:
         raise AgentError("找不到对应的 SkillRegistered 事件，跳过")
@@ -210,25 +254,26 @@ def process_request(ctx: AgentContext, request: AuditRequest, registration: Regi
             f"key=0x{request.key.hex()} repo={registration.repo} 不是本地路径或越出"
             " SKILL_SOURCE_ROOT，跳过（不提交任何结论）"
         )
-        return "跳过（来源不可用）"
+        _event(ctx,'source_failed',{'reason':'来源不是可用的本机路径'})
+        raise AgentError('来源不可用')
 
-    # manifest 与链上登记核对（SPEC 8.2 第 5 条）
-    manifest_raw = read_manifest_json(source)
-    manifest_name = str(manifest_raw.get("name", ""))
-    manifest_version = str(manifest_raw.get("version", ""))
-    if manifest_name != registration.skill or manifest_version != registration.version:
-        raise AgentError(
-            f"manifest({manifest_name}@{manifest_version}) 与事件"
-            f"({registration.skill}@{registration.version}) 不一致，跳过"
-        )
-    code_hash = compute_code_hash(source)
-    metadata_hash = compute_metadata_hash(source)
-    if code_hash != onchain_code_hash or metadata_hash != onchain_metadata_hash:
-        raise AgentError("本地计算的 codeHash/metadataHash 与链上登记不一致，跳过")
-
-    # 规则引擎（不带 LLM，SPEC 8.4）
-    report = ctx.scanner(source)
+    # 规则与模型审计共享同一份已核对的不可变字节快照。
+    _event(ctx,'source_resolved',{'source':registration.repo})
+    captured = capture_skill(source, source_root=ctx.root)
+    from .hashing import code_hash, metadata_hash
+    if code_hash(captured)!=onchain_code_hash or metadata_hash(captured)!=onchain_metadata_hash:
+        raise AgentError('来源内容哈希与链上登记不一致')
+    _event(ctx,'hashes_verified',{'codeHash':'0x'+onchain_code_hash.hex(),'metadataHash':'0x'+onchain_metadata_hash.hex()})
+    report = ctx.scanner(captured)
+    _event(ctx,'scan_completed',{'level':report.level if hasattr(report,'level') else report['level']})
+    if ctx.reasoner is not None:
+        report = ctx.reasoner(captured, report, lambda stage,data: _event(ctx,stage,data), ctx.stop_requested)
     payload = dict(report.to_dict() if hasattr(report, "to_dict") else report)
+    if payload.get("skill") != registration.skill or payload.get("version") != registration.version:
+        raise AgentError("报告的技能名/版本与链上登记不一致，跳过")
+    if (payload.get("codeHash") != "0x" + onchain_code_hash.hex()
+            or payload.get("metadataHash") != "0x" + onchain_metadata_hash.hex()):
+        raise AgentError("报告的 codeHash/metadataHash 与链上登记不一致，跳过")
     # 提交者地址先写实再算哈希（与 auditor/cli._submit_and_save 相同约定）
     payload["auditor"] = ctx.account.address
     digest = report_hash(payload)
@@ -237,29 +282,37 @@ def process_request(ctx: AgentContext, request: AuditRequest, registration: Regi
     if level == SUSPICIOUS:
         target = ctx.root / PENDING_DIRNAME / f"0x{request.key.hex()}.json"
         target.parent.mkdir(parents=True, exist_ok=True)
+        from .storage import save_report
+        path, pending_hash=save_report(payload,ctx.root/'reports')
+        # Keep the legacy CLI path while the durable scoped journal is authoritative.
         target.write_bytes(canonical_json(payload))
+        _event(ctx,'report_saved',{'reportHash':pending_hash})
+        _event(ctx,'waiting_human',{'reportHash':pending_hash})
         ctx.log(
             f"key=0x{request.key.hex()} 结论 SUSPICIOUS：已写 {target.relative_to(ctx.root)}，"
             "等人裁决（python -m auditor.cli <dir> --submit --human-decision safe|malicious）"
         )
         return "SUSPICIOUS 已落盘待裁决"
 
+    from .protocol import registry_capabilities
+    capabilities=registry_capabilities(ctx.w3,ctx.contract)
     is_malicious = level == MALICIOUS
-    hashes = ctx.submitter(
+    payload, hashes, _ = submit_and_save_report(
+        report=payload, reports_dir=ctx.root / "reports", submitter=ctx.submitter,
         w3=ctx.w3,
         contract=ctx.contract,
         account=ctx.account,
         chain_id=ctx.chain_id,
-        skill=registration.skill,
-        version=registration.version,
-        level=level,
-        report_hash=digest,
-        code_hash=code_hash,
-        metadata_hash=metadata_hash,
-        is_malicious=is_malicious,
         log=ctx.log,
+        **({"lifecycle": lambda stage,data:_event(ctx,stage,data)} if ctx.journal is not None else {}),
     )
-    verdict = "MALICIOUS" if is_malicious else "SAFE"
+    expected=5 if is_malicious and capabilities['arbitrationSupported'] else 4 if is_malicious else 3
+    entry=ctx.contract.functions.skills(request.key).call()
+    if entry[5]!=expected or bytes(entry[6])!=digest or entry[7].lower()!=ctx.account.address.lower():
+        raise AgentError('审计回执与实际链上状态或报告身份不一致')
+    if expected==5:
+        _event(ctx,'arbitration_pending',{'reportHash':'0x'+digest.hex(),'status':5})
+    verdict = "待独立仲裁（暂定恶意）" if expected==5 else "MALICIOUS" if is_malicious else "SAFE"
     ctx.log(
         f"key=0x{request.key.hex()} 结论 {verdict} 已提交"
         f"（{len(hashes)} 笔交易，reportHash=0x{digest.hex()}）"
@@ -272,23 +325,29 @@ def process_request(ctx: AgentContext, request: AuditRequest, registration: Regi
 # --------------------------------------------------------------------------
 def run_once(ctx: AgentContext, cursor: int) -> tuple[int, int]:
     """跑一轮 [cursor, latest]：返回 (新游标, latest)。错误只记日志，不中断。"""
+    cursor = max(cursor, ctx.deployment_block)
     latest = int(ctx.w3.eth.block_number)  # type: ignore[attr-defined]
     if latest < cursor:
         return cursor, latest
     requests = ctx.fetch_requests(ctx.contract, cursor, latest)
-    registrations = ctx.fetch_registrations(ctx.contract, 0, latest)
+    registrations = ctx.fetch_registrations(ctx.contract, ctx.deployment_block, latest)
 
-    best_block = cursor  # 已成功处理的最高区块；游标 = 最高成功区块 + 1
+    best_block = latest
+    failed_blocks: list[int] = []
     for request in requests:
+        if ctx.stop_requested():
+            failed_blocks.append(request.block)
+            break
         try:
             outcome = process_request(ctx, request, registrations.get(request.key))
             ctx.log(f"块 {request.block}：{outcome}（key=0x{request.key.hex()}）")
             ctx.outcomes.append(outcome)
             best_block = max(best_block, request.block)
         except Exception as exc:  # 只记日志，不中断（SPEC 8.2 第 7 条）
-            ctx.log(f"块 {request.block}：处理失败（{exc}），跳过")
-    new_cursor = best_block + 1 if best_block >= cursor else cursor
-    write_cursor(ctx.root, new_cursor)
+            failed_blocks.append(request.block)
+            ctx.log(f"块 {request.block}：处理失败（{type(exc).__name__}），保留待重试")
+    new_cursor = min(failed_blocks) if failed_blocks else best_block + 1
+    write_cursor(ctx.root, new_cursor, ctx.chain_id, getattr(ctx.contract, "address", None))
     return new_cursor, latest
 
 
@@ -330,8 +389,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[错误] {exc}", file=sys.stderr)
         return EXIT_ERROR
 
+    from .reasoner import configured_auditor
+    from .llm import LLMError
+    try:
+        reasoner = configured_auditor(PROJECT_ROOT)
+    except LLMError as exc:
+        print(f'[错误] {exc}', file=sys.stderr)
+        return EXIT_ERROR
     ctx = AgentContext(
         root=PROJECT_ROOT,
+        reasoner=reasoner,
         contract=contract,
         account=account,
         chain_id=config.chain_id,
@@ -341,6 +408,8 @@ def main(argv: list[str] | None = None) -> int:
         fetch_registrations=fetch_registrations,
         scanner=scan_skill_report,
         submitter=submit_report_onchain,
+        deployment_block=config.deployment_block,
+        deployment_revision=config.deployment_revision,
     )
 
     # 启动自检：质押不足 → exit 2，不自行质押（SPEC 8.1）
@@ -357,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_NOT_STAKED
 
-    cursor = args.from_block if args.from_block is not None else read_cursor(PROJECT_ROOT)
+    cursor = args.from_block if args.from_block is not None else read_cursor(PROJECT_ROOT, config.chain_id, config.registry_address)
     log(f"chainId={w3.eth.chain_id}")
     registry_addr = getattr(contract, "address", config.registry_address)
     log(f"registry={registry_addr}")
@@ -365,15 +434,21 @@ def main(argv: list[str] | None = None) -> int:
     log(f"staked={staked}")
     log(f"cursor={cursor}")
 
+    from .worker import run_worker
+    from .journal import Journal
+    import threading
+    ctx.journal=Journal(PROJECT_ROOT)
+    stop=threading.Event()
     try:
-        while True:
-            new_cursor, _latest = run_once(ctx, cursor)
-            cursor = new_cursor
-            if args.once:
-                return EXIT_OK
-            time.sleep(max(args.poll, 0.2))
-    except KeyboardInterrupt:
+        run_worker(ctx,stop,args.poll,once=args.once,cursor=cursor)
         return EXIT_OK
+    except KeyboardInterrupt:
+        stop.set()
+        return EXIT_OK
+    except RuntimeError as exc:
+        log(str(exc))
+        return EXIT_ERROR
+
 
 
 if __name__ == "__main__":
