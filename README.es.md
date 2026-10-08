@@ -267,6 +267,7 @@ Consulta [la aceptación de páginas por rol](docs/ROLE-PAGES-ACCEPTANCE.md) par
 
 - Las skills de demo son **fixtures de texto inertes**. Contienen cadenas que activan reglas, pero no leen credenciales reales, acceden a la red ni ejecutan comandos externos.
 - Las reglas pueden omitir contenido malicioso o marcar contenido benigno. Una auditoría no demuestra seguridad.
+- Los archivos fuente subidos deben ser texto UTF-8 para que el agente pueda revisar todos los archivos incluidos en el hash; los binarios se rechazan, no se omiten silenciosamente.
 - Cada informe lo envía un solo auditor. v1 no tiene arbitraje independiente; v2 añade un revisor, pero su decisión tampoco es infalible.
 - No hay tarifa de auditoría y el stake del auditor no se puede retirar actualmente. La liquidación depende de la versión del contrato.
 - El origen solo puede ser local; no se descargan repositorios Git remotos. El agente no ejecuta el código subido.

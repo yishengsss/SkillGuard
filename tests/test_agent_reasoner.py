@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 import pytest
 from auditor.skill_dir import capture_skill
 from auditor.scanner import scan_skill_report
@@ -42,6 +43,19 @@ def test_no_finish_without_reading_files(tmp_path,monkeypatch):
     source=write_skill(tmp_path/'skill',name='agent-example',description='查询天气')
     with pytest.raises(AgentAuditError,match='完整'):
         run(tmp_path,monkeypatch,[responses(capture_skill(source))[1]])
+
+
+def test_non_utf8_snapshot_fails_with_relative_path_before_model_request(tmp_path,monkeypatch):
+    from auditor import reasoner
+    from auditor.reasoner import AgentAuditError
+    source=write_skill(tmp_path/'skill',name='agent-example',description='查询天气')
+    (source/'assets').mkdir()
+    (source/'assets'/'icon.bin').write_bytes(b'\x89PNG\x00\xff')
+    snapshot=capture_skill(source)
+    report=scan_skill_report(snapshot)
+    monkeypatch.setattr(reasoner,'_post',lambda *args:pytest.fail('model must not receive an incomplete snapshot'))
+    with pytest.raises(AgentAuditError,match='assets/icon.bin'):
+        reasoner.audit_snapshot(snapshot,report,LLMConfig('fixture-key','https://example.org/v1','fixture-model'))
 
 
 @pytest.mark.parametrize('finding',[

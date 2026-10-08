@@ -67,6 +67,18 @@ def test_custom_zip_hashes_match_scanner_and_gate(tmp_path):
     assert (tmp_path/first['source']).is_dir()
 
 
+def test_non_utf8_source_file_is_rejected_before_package_publication(tmp_path):
+    mod = importlib.import_module('ops.packages')
+    data = archive([
+        ('manifest.json', manifest(), stat.S_IFREG|0o644),
+        ('main.py', b'VALUE = 1\n', stat.S_IFREG|0o644),
+        ('assets/icon.bin', b'\x89PNG\x00\xff', stat.S_IFREG|0o644),
+    ])
+    with pytest.raises(mod.PackageError, match='assets/icon.bin'):
+        mod.PackageStore(tmp_path).upload(data, session())
+    assert not list((tmp_path/'.cache/packages').glob('*/*/source'))
+
+
 def test_package_drafts_remain_owned_when_identical_bytes_are_uploaded(tmp_path):
     mod = importlib.import_module('ops.packages')
     store = mod.PackageStore(tmp_path)

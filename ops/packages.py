@@ -160,6 +160,11 @@ class PackageStore:
                         target.chmod(mode)
                     captured=capture_skill(source,source_root=self.root)
                     manifest=_manifest(captured.manifest_bytes)
+                    # The resident model auditor must read every hashed source file completely.
+                    # Do not publish an archive that can only be partially reviewed as text.
+                    for relative,content in captured.files:
+                        try: content.decode('utf-8')
+                        except UnicodeDecodeError: raise PackageError(f'源码文件不是 UTF-8 文本，Agent 无法完整审计：{relative}') from None
                     code='0x'+code_hash(captured).hex()
                     metadata='0x'+metadata_hash(captured).hex()
                     identity={'publisher':publisher.lower(),'codeHash':code,'metadataHash':metadata,

@@ -267,6 +267,7 @@ See [role-page acceptance](docs/ROLE-PAGES-ACCEPTANCE.md) for recorded results, 
 
 - Demo skills are **inert text fixtures**. They contain strings that trigger audit rules, but do not read real credentials, access the network, or execute external commands.
 - Rule-based checks can miss malicious behavior or flag benign content. An audit is not proof of safety.
+- Uploaded source files must be UTF-8 text so the model agent can review every hashed file; binary files are rejected instead of silently omitted.
 - A single auditor submits each report. Protocol v1 has no independent arbitration; v2 adds a reviewer but cannot make that review infallible.
 - There is no audit fee, and auditor stake cannot currently be withdrawn. Settlement behavior depends on the contract protocol version.
 - Source resolution is local-only; fetching remote Git repositories is not implemented. The agent does not execute uploaded skill code.

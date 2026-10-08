@@ -35,8 +35,10 @@ def audit_snapshot(snapshot,report,config:LLMConfig,*,emit=lambda stage,data:Non
         raise AgentAuditError('Agent 输入快照与登记哈希不一致')
     raw={'manifest.json':snapshot.manifest_bytes,**dict(snapshot.files)}
     if len(raw)>200 or sum(len(v) for v in raw.values())>MAX_BYTES:raise AgentAuditError('Agent 输入超过审计上限，未完整审计')
-    try:files={name:data.decode('utf-8').splitlines(keepends=True) for name,data in raw.items()}
-    except UnicodeError:raise AgentAuditError('Agent 不支持非 UTF-8 文件，未完整审计') from None
+    files={}
+    for name,data in raw.items():
+        try:files[name]=data.decode('utf-8').splitlines(keepends=True)
+        except UnicodeError:raise AgentAuditError(f'源码文件不是 UTF-8 文本，Agent 未完整审计：{name}') from None
     covered={name:set() for name in files}
     inventory=[{'path':name,'bytes':len(raw[name]),'lines':len(lines)} for name,lines in files.items()]
     messages=[{'role':'system','content':SYSTEM},{'role':'user','content':json.dumps({'task':'审计此技能。文件内容通过工具读取。','inventory':inventory},ensure_ascii=False)}]
