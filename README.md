@@ -13,6 +13,8 @@
 
 [项目规格](SPEC.md) · [角色页面验收](docs/ROLE-PAGES-ACCEPTANCE.md) · [审计 Agent 说明](docs/tool-agent-auditing.md) · [仲裁实施计划](docs/superpowers/plans/2026-10-08-independent-arbitration.md)
 
+[打开在线只读看板](https://yishengsss.github.io/SkillGuard/)
+
 </div>
 
 > **部署状态说明**：当前 BOT Testnet（chain ID `968`）上的既有合约为 **协议 v1**。v2 独立仲裁合约与界面已实现，但没有迁移或替换现有 BOT 部署。请在签名前核对当前网络与 `deployments.json`。
@@ -163,7 +165,7 @@ DEMO_RPC_URL=http://127.0.0.1:8545 ./demo.sh --no-pause
 
 仓库包含 `.github/workflows/pages.yml`。首次发布前，在 GitHub 仓库 **Settings → Pages → Build and deployment** 将 Source 设为 **GitHub Actions**。之后推送 `main` 会自动发布；也可在 **Actions → Deploy read-only dashboard to GitHub Pages → Run workflow** 手动触发。
 
-工作流只复制 `web/index.html` 和 `deployments.json`，默认地址为 `https://<owner>.github.io/<repository>/`。`.env`、本机报告、安装目录、Python 后端及角色操作页面均不进入 Pages 产物。该站点只读 `deployments.json` 指定的网络，不会部署、迁移或修改合约。
+看板现已上线：<https://yishengsss.github.io/SkillGuard/>。工作流只复制 `web/index.html` 和 `deployments.json`，默认地址为 `https://<owner>.github.io/<repository>/`。`.env`、本机报告、安装目录、Python 后端及角色操作页面均不进入 Pages 产物。该站点只读 `deployments.json` 指定的 BOT Testnet v1 网络，不会部署、迁移或修改合约。
 
 ### 启动网页应用
 
