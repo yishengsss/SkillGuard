@@ -1,116 +1,138 @@
 <div align="center">
 
-# SkillGuard · 技能卫士
+# SkillGuard
 
-[简体中文](README.md) · [English](README.en.md)
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-### 在安装前核验 AI Agent 技能，让审计过程与链上结论可追溯
+### Verify AI-agent skills before installation—with auditable evidence and on-chain outcomes
 
-**技能版本注册 · 自动审计 Agent · MCP 安装门禁 · 独立仲裁与押金结算**
+**Versioned skill registry · Resident audit agent · MCP install gate · Independent arbitration**
 
 ![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![Solidity 0.8.24](https://img.shields.io/badge/Solidity-0.8.24-363636?logo=solidity)
 ![MCP](https://img.shields.io/badge/Protocol-MCP-6B5CE7)
 ![BOT Testnet](https://img.shields.io/badge/Network-BOT%20Testnet%20%23968-2F855A)
 
-[项目规格](SPEC.md) · [角色页面验收](docs/ROLE-PAGES-ACCEPTANCE.md) · [审计 Agent 说明](docs/tool-agent-auditing.md) · [仲裁实施计划](docs/superpowers/plans/2026-10-08-independent-arbitration.md)
+[Specification](SPEC.md) · [Role-page acceptance](docs/ROLE-PAGES-ACCEPTANCE.md) · [Audit-agent workflow](docs/tool-agent-auditing.md) · [Arbitration plan](docs/superpowers/plans/2026-10-08-independent-arbitration.md)
 
-[打开在线只读看板](https://yishengsss.github.io/SkillGuard/)
+[Open the read-only dashboard](https://yishengsss.github.io/SkillGuard/)
 
 </div>
 
-> **线上版本说明**：当前 BOT Testnet（chain ID `968`）上的合约，以及在线只读看板展示的数据，均为 **协议 v1**。仓库包含 v2 独立仲裁的合约代码与页面，但 v2 尚未部署到 BOT；线上看板不会显示 v2 仲裁案件，也不能据此认为线上押金已冻结或受仲裁保护。请在签名前核对当前网络与 `deployments.json`。
+> **Live deployment status:** The existing contracts on BOT Testnet (chain ID `968`) and the online read-only dashboard use **protocol v1**. Protocol-v2 arbitration code and UI are in this repository but have **not** been deployed to BOT. The live dashboard does not show v2 arbitration cases; do not assume deposits on the current BOT deployment are frozen or covered by independent arbitration. Verify the active network and `deployments.json` before signing.
 
-## 目录
+## Contents
 
-- [项目简介](#项目简介)
-- [工作流程](#工作流程)
-- [协议版本](#协议版本)
-- [功能](#功能)
-- [快速开始](#快速开始)
-- [在线只读看板](#在线只读看板)
-- [角色页面](#角色页面)
-- [测试](#测试)
-- [安全边界与已知限制](#安全边界与已知限制)
-- [项目结构](#项目结构)
-- [许可证](#许可证)
+- [Overview](#overview)
+- [Workflow](#workflow)
+- [Protocol versions](#protocol-versions)
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Read-only dashboard](#read-only-dashboard)
+- [Role-based web app](#role-based-web-app)
+- [Commands](#commands)
+- [Protocol-v2 deployment](#protocol-v2-deployment)
+- [Tests and acceptance](#tests-and-acceptance)
+- [Security and limitations](#security-and-limitations)
+- [Repository layout](#repository-layout)
+- [License](#license)
 
-## 项目简介
+## Overview
 
-SkillGuard 为 AI Agent 的技能供应链提供安装前核验流程。技能发布者登记具体版本和内容哈希；常驻审计 Agent 核验来源、扫描规则并提交报告；安装方 Agent 通过 MCP 工具检查链上状态、许可证及本地内容哈希，再决定是否安装。
+SkillGuard provides a pre-install verification flow for AI-agent skills. A publisher registers a specific skill version and its content hashes. A resident audit agent validates the source, runs security checks, and records its report. Before installation, an installer agent can use MCP tools to check the on-chain status, license, and local content hashes.
 
-人的操作由浏览器 EOA 钱包签名：发布者锁定押金，审计者运营方质押，管理员部署合约；协议 v2 中，独立仲裁者裁决暂定恶意案件，公共资金钱包领取对应资金。服务端准备交易并校验回执，不替发布者或管理员代签。
+People sign their own transactions with browser EOA wallets: publishers lock deposits, audit operators stake, and administrators deploy contracts. Under protocol v2, a separate arbiter reviews provisional malicious reports; a public treasury can withdraw its credited funds. The web server prepares and verifies transactions but does not sign for publishers or administrators.
 
-### 角色与职责
+### Roles
 
-| 角色 | 主要职责 | 凭证 / 签名方式 |
+| Role | Responsibility | Credentials / signing |
 |---|---|---|
-| 发布者 | 登记技能版本、支付押金、领取退款 | 浏览器 EOA；CLI 演示使用 `PRIVATE_KEY` |
-| 审计者运营方 | 质押、启动审计服务、处理 SUSPICIOUS | 浏览器 EOA；常驻服务使用 `AUDITOR_PRIVATE_KEY` |
-| 管理员 | 部署、接线与激活合约 | 浏览器 owner 钱包；CLI 部署使用 `OWNER_PRIVATE_KEY` |
-| 独立仲裁者（v2） | 在截止前核对证据并作最终裁决 | 独立浏览器 EOA；部署时配置公开地址 `ARBITER_ADDRESS` |
-| 公共资金钱包（v2） | 领取确认恶意案件的公共资金份额 | 独立地址 `TREASURY_ADDRESS`，仅领取自己的 credits |
-| 安装方 Agent | 查询许可证，核对哈希后请求安装 | 无钱包；通过 MCP 调用门禁 |
+| Publisher | Register skill versions, lock deposits, withdraw refunds | Browser EOA; CLI demo uses `PRIVATE_KEY` |
+| Audit operator | Stake, run the audit service, review suspicious results | Browser EOA; resident service uses `AUDITOR_PRIVATE_KEY` |
+| Administrator | Deploy, wire, and activate contracts | Browser owner wallet; CLI deployment uses `OWNER_PRIVATE_KEY` |
+| Independent arbiter (v2) | Review evidence and decide provisional malicious cases before the deadline | Separate browser EOA; public address configured as `ARBITER_ADDRESS` |
+| Public treasury (v2) | Withdraw funds credited after a malicious verdict is confirmed | Separate `TREASURY_ADDRESS`; can withdraw only its own credits |
+| Installer agent | Check licenses and request installation | No wallet; calls the MCP gate |
 
-演示环境中，角色钱包由开发者控制。发布者、审计者和管理员地址必须互不相同；v2 仲裁者与公共资金地址也必须相互独立，且不能与 owner 重合。
+Demo wallets are controlled by the project operator. Publisher, auditor, and owner addresses must be distinct. In v2, the arbiter and treasury must also be distinct from each other and from the owner.
 
-## 工作流程
+## Workflow
 
 ```mermaid
 flowchart LR
-    P[发布者钱包] -->|登记版本 · 锁定押金| R[(SkillRegistry)]
-    R -->|AuditRequested| A[常驻审计 Agent]
-    A -->|取得快照 · 核验哈希 · 审计| D{结论}
-    D -->|SAFE| V[Verified · 许可证]
-    D -->|MALICIOUS| M[按协议版本结算]
-    D -->|SUSPICIOUS| H[暂停自动结论 · 人工处理]
-    V --> I[安装方 Agent]
+    P[Publisher wallet] -->|Register version · lock deposit| R[(SkillRegistry)]
+    R -->|AuditRequested| A[Resident audit agent]
+    A -->|Capture source · verify hashes · audit| D{Verdict}
+    D -->|SAFE| V[Verified · license minted]
+    D -->|MALICIOUS| M[Settlement depends on protocol]
+    D -->|SUSPICIOUS| H[Pause automatic verdict · human review]
+    V --> I[Installer agent]
     M --> I
-    I -->|MCP：状态 · 许可证 · 内容哈希| G{安装门禁}
-    G -->|通过| OK[允许安装]
-    G -->|失败| NO[拒绝安装]
+    I -->|MCP: status · license · content hashes| G{Install gate}
+    G -->|Checks pass| OK[Allow installation]
+    G -->|Any check fails| NO[Reject installation]
 ```
 
-### 状态与处理
+### Verdicts and on-chain states
 
-| 审计结论 / 链上状态 | 处理方式 |
+| Verdict / state | Behavior |
 |---|---|
-| `SAFE` / `Verified (3)` | 铸造版本许可证；v1 立即退款，v2 记入发布者可领取余额。 |
-| `MALICIOUS` / v1 `Malicious (4)` | 适用旧合约结算规则；此状态是既有 BOT 部署的行为。 |
-| 暂定 `MALICIOUS` / v2 `ArbitrationPending (5)` | 押金被冻结，不支付给报告审计者、不铸造许可证；独立仲裁者在期限内裁决。 |
-| v2 `ArbitrationExpired (6)` | 仲裁超时后押金记入发布者可领取余额；技能仍不能安装。 |
-| `SUSPICIOUS` | 不自动提交链上结论；报告进入 `reports/pending/`，等待人工复核。 |
+| `SAFE` / `Verified (3)` | A version license is minted. Protocol v1 refunds immediately; v2 credits the publisher for pull withdrawal. |
+| `MALICIOUS` / v1 `Malicious (4)` | Uses the legacy settlement behavior of the existing contract. |
+| Provisional malicious / v2 `ArbitrationPending (5)` | Deposit is frozen; no reward is paid to the reporting auditor and no license is minted while arbitration is pending. |
+| v2 `ArbitrationExpired (6)` | After the arbitration deadline, the publisher is credited; the skill remains unverified. |
+| `SUSPICIOUS` | No automatic on-chain verdict. The report is stored under `reports/pending/` for human review. |
 
-安装门禁只有在状态为 Verified、许可证存在，且本地 `codeHash`、`metadataHash` 与链上登记一致时才允许安装。
+The install gate allows a skill only when its status is Verified, its license exists, and its local `codeHash` and `metadataHash` match the on-chain registration.
 
-## 协议版本
+## Protocol versions
 
-| | 协议 v1 | 协议 v2 |
+| | Protocol v1 | Protocol v2 |
 |---|---|---|
-| 链上恶意状态 | `Malicious (4)` | 先进入 `ArbitrationPending (5)`，最终可变为 `Malicious (4)` 或 `Verified (3)`；超时为 `ArbitrationExpired (6)` |
-| 押金处理 | 旧版合约逻辑 | 冻结后由仲裁结果/超时决定资金归属，采用 pull 领取 |
-| 仲裁角色 | 无独立仲裁角色 | 独立仲裁者与公共资金钱包，一次配置后链上锁定 |
-| 部署步骤 | Registry、License、双向接线 | 前四步不变；第五步配置仲裁者和公共资金钱包 |
-| 当前 BOT 部署 | **当前 chain ID 968 的既有部署** | 未部署到 BOT；需另行部署与验收 |
+| Malicious state | `Malicious (4)` | Starts at `ArbitrationPending (5)`; final state can be `Malicious (4)` or `Verified (3)`, or `ArbitrationExpired (6)` after timeout |
+| Deposit settlement | Legacy contract behavior | Frozen pending a decision; pull withdrawals after arbitration or timeout |
+| Arbitration roles | No independent arbiter | One-time, on-chain-locked arbiter and treasury |
+| Deployment | Registry, License, and wiring | Same first four steps, plus a fifth step to configure arbitration roles |
+| Current BOT deployment | **Existing deployment on chain ID 968** | Not deployed to BOT; requires a separate deployment and acceptance |
 
-v2 仲裁期限为 7 天。确认恶意时，押金记入公共资金钱包的可领取余额；推翻恶意时，发布者获得 VERIFIED 许可证并可领取退款；到期未裁决时，任何人可触发超时结算，退款归发布者但不铸证。仲裁报告保留原审计报告，不篡改原审计者的结论记录。
+The v2 arbitration window is seven days. If malicious behavior is confirmed, the deposit is credited to the public treasury. If the report is overturned, the publisher receives a Verified license and a refundable credit. If the deadline expires, anyone can trigger settlement: the publisher is credited, but no license is minted. The final arbitration report is stored separately and does not rewrite the original auditor's report.
 
-## 功能
+## Features
 
-- **版本登记与内容绑定**：每个技能版本分别登记来源、`codeHash` 和 `metadataHash`，避免用旧版本许可证覆盖新内容。
-- **多阶段审计**：元数据规则、源码静态规则、仿冒包名检查；可选 LLM 一致性检查。常驻 Agent 使用配置的工具调用模型审计不可变源码快照。
-- **审计记录**：规范化 JSON 报告以哈希关联链上结论；模型 Agent 的运行记录在可用时展示。历史记录若没有运行日志，会明确说明。
-- **MCP 安装接口**：`check_skill` 只读查链；`install_skill` 只有在检查通过后才复制，并对副本再次核对哈希。
-- **多角色页面**：技能库、发布者、审计运营、管理员、技能详情、安装、独立仲裁。
-- **部署兼容性识别**：页面读取真实链上协议能力，不把 v1 合约显示成支持 v2 仲裁。
+- **Version-bound registration:** each version stores its source, `codeHash`, and `metadataHash`; a new version requires a new audit.
+- **Multi-stage checks:** metadata rules, source-code rules, package-name similarity checks, and optional LLM consistency checks. The resident agent audits an immutable source snapshot.
+- **Auditable reports:** canonical JSON reports are linked to on-chain outcomes by hash. Model-agent events are shown when available; historical records without a run log are labeled accordingly.
+- **MCP install tools:** `check_skill` performs read-only checks; `install_skill` copies only after validation and verifies the copied content again.
+- **Role-based web app:** catalogue, publisher, audit operations, administrator, skill detail, install, and independent arbitration pages.
+- **Protocol compatibility:** the UI reads the deployed contract's capabilities and does not present a v1 contract as supporting v2 arbitration.
 
-## 快速开始
+### Audit-agent processing
 
-### 环境要求
+1. Read `AuditRequested` events from the persisted block cursor.
+2. Load the corresponding `SkillRegistered` entry and current on-chain status; skip versions already processed.
+3. Resolve only local sources (a project-root-relative path or `file://`); reject remote URLs and path escapes.
+4. Validate manifest name/version and compare local source and manifest hashes with the registered hashes.
+5. Run rule checks on the same immutable source snapshot, then let the configured tool-calling model review files and evidence through read-only tools.
+6. Process SAFE/MALICIOUS according to the contract protocol. Store SUSPICIOUS reports for human review without broadcasting a verdict.
+
+The agent never imports or executes skill code. If the source cannot be read, hashes do not match, model review fails, or evidence is invalid, the agent must not present the result as SAFE. The resident agent requires valid model configuration.
+
+### Hashes and reports
+
+- `metadataHash` is Keccak-256 of the raw `manifest.json` bytes.
+- `codeHash` is Keccak-256 of a deterministic, unambiguous encoding of sorted relative paths and file contents. `.env*`, `.git`, caches, symlinks, and non-regular files are excluded.
+- `reportHash` is calculated from canonical JSON (sorted keys, compact separators, UTF-8); the saved report bytes correspond to the hash submitted on-chain.
+- v2 arbitration stores a separate final review report linked to the original report hash, arbiter, decision, reason, and source evidence.
+
+These formats are shared by registration, audit submission, and installation checks. Changing them affects hash compatibility.
+
+## Quick start
+
+### Requirements
 
 - Python 3.11+
-- Foundry：`anvil`、`forge`、`cast`
-- Node.js：仅运行浏览器逻辑测试时需要
+- Foundry: `anvil`, `forge`, and `cast`
+- Node.js: only required for browser-module tests
 
 ```bash
 git clone https://github.com/yishengsss/SkillGuard.git
@@ -121,149 +143,151 @@ python3.11 -m venv .venv
 cp .env.example .env
 ```
 
-在 `.env` 中设置 RPC 和角色配置。各私钥只用于本地 CLI/脚本路径；角色网页交易由浏览器钱包签名。
+Configure `RPC_URL` and the role credentials in `.env`. Private keys are used only by local CLI/script paths; role-page transactions are signed by browser wallets.
 
-| 配置项 | 用途 |
+| Variable | Purpose |
 |---|---|
-| `RPC_URL` | Anvil 或已配置的 EVM RPC。 |
-| `PRIVATE_KEY` | CLI 演示中的发布者钱包。 |
-| `AUDITOR_PRIVATE_KEY` | 审计服务钱包：人工质押、CLI/worker 提交审计。 |
-| `OWNER_PRIVATE_KEY` | CLI 部署脚本使用的管理员钱包。 |
-| `ARBITER_ADDRESS`、`TREASURY_ADDRESS` | 可选的 v2 本地部署角色地址；两者必须互异且都不同于 owner。 |
-| `LLM_API_KEY`、`LLM_BASE_URL`、`LLM_MODEL` | 常驻模型 Agent 必需；规则扫描 CLI 不需要。 |
+| `RPC_URL` | Anvil or another configured EVM RPC endpoint |
+| `PRIVATE_KEY` | Publisher wallet for the CLI demo |
+| `AUDITOR_PRIVATE_KEY` | Audit service wallet for staking and CLI/worker submissions |
+| `OWNER_PRIVATE_KEY` | Administrator wallet used by the CLI deployment script |
+| `ARBITER_ADDRESS`, `TREASURY_ADDRESS` | Optional public addresses for a local v2 deployment; must be distinct from each other and the owner |
+| `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL` | Required by the resident model agent; not required for rules-only CLI scans |
 
-**不要使用真实主网资产或真实钱包私钥运行本地演示。** `.env` 已被 Git 忽略。
+**Do not use real mainnet funds or production private keys for the local demo.** `.env` is ignored by Git.
 
-### 一键本地演示
+### Run the local demo
 
-终端一启动 Anvil：
+Terminal 1:
 
 ```bash
 anvil
 ```
 
-终端二运行完整流程：
+Terminal 2:
 
 ```bash
 ./demo.sh --no-pause
 ```
 
-脚本会检查角色钱包、按配置部署、由人质押、启动常驻 Agent、登记 `weather` 与 `mail-helper`，等待链上结论，然后通过 MCP 安装接口验证放行与拒绝。Agent 需要可用的 LLM 配置。再次运行前请重启 Anvil；已注册版本不会被覆盖。
+The script checks role separation, deploys when needed, requests human-operated staking, starts the resident audit worker, registers `weather` and `mail-helper`, waits for on-chain results, then exercises MCP installation. The agent needs a working LLM configuration. Restart Anvil before rerunning: registered versions cannot be overwritten.
 
-临时切换到本机 Anvil、而不修改 `.env`：
+To use local Anvil without changing `.env`:
 
 ```bash
 DEMO_RPC_URL=http://127.0.0.1:8545 ./demo.sh --no-pause
 ```
 
-### 在线只读看板
+## Read-only dashboard
 
-[打开 SkillGuard 看板](https://yishengsss.github.io/SkillGuard/)。该页面仅读取 BOT Testnet（chain ID `968`）上的现有 v1 合约，不连接钱包、不发送交易。v2 仲裁功能尚未部署到 BOT；线上仍适用现有 v1 合约行为。
+[Open the live dashboard](https://yishengsss.github.io/SkillGuard/). It reads the existing BOT Testnet v1 deployment (chain ID `968`) and sends no transactions. Protocol-v2 arbitration is not deployed on BOT; the live dashboard does not show v2 arbitration cases.
 
-### 启动网页应用
+## Role-based web app
+
+Start the local web service:
 
 ```bash
 .venv/bin/python -m ops.server --port 8765
 ```
 
-在浏览器打开 <http://127.0.0.1:8765/>。服务仅绑定本机 loopback；不要通过反向代理或公网暴露。
+Open <http://127.0.0.1:8765/>. The service binds to loopback only; do not expose it through a reverse proxy or public network.
 
-也可运行独立的角色体验环境。该脚本会创建独立 Anvil 与公开测试钱包，不读取生产 `.env`；测试钱包不可接收真实资产：
+For an isolated role walkthrough, a test harness starts a separate Anvil instance and uses public test wallets. Never send real assets to those wallets:
 
 ```bash
 .venv/bin/python tests/role_demo.py --rpc-port 18857 --port 18701
 ```
 
-### MCP 安装服务
+### MCP installation server
 
-任何兼容 MCP 的 Agent 都可调用：
+Any compatible agent can call the stdio tools:
 
 ```bash
 .venv/bin/python gate/mcp_server.py
 ```
 
-stdio 工具名为 `check_skill(skill_dir)` 与 `install_skill(skill_dir)`。仓库中的 `demo-agent/.mcp.json` 是客户端配置示例；确保 MCP 客户端使用安装了项目依赖的 Python 解释器。
+The tools are `check_skill(skill_dir)` and `install_skill(skill_dir)`. `demo-agent/.mcp.json` is an example client configuration. Configure the MCP client to use a Python interpreter with this repository's dependencies installed.
 
-## 常用命令
+## Commands
 
 ```bash
-# 离线规则扫描（不执行技能代码）
+# Rules-only audit; does not execute skill code
 .venv/bin/python -m auditor.cli samples/weather
 
-# 质押与常驻审计 Agent
+# Human-operated stake and resident audit agent
 .venv/bin/python -m auditor.stake
 .venv/bin/python -m auditor.agent [--once] [--from-block N] [--poll SECONDS]
 
-# 人工处理 SUSPICIOUS
+# Human decision for a SUSPICIOUS report
 .venv/bin/python -m auditor.cli <skill-dir> --submit --human-decision safe
 .venv/bin/python -m auditor.cli <skill-dir> --submit --human-decision malicious
 
-# 安装门禁
+# Human-readable install gate
 .venv/bin/python gate/gate.py install samples/weather
 
-# 测试
+# Tests
 (cd contracts && forge test -vv)
 .venv/bin/python -m pytest -q -m 'not anvil'
 node --test tests/web/*.test.mjs
 ```
 
-### 新部署 v2 仲裁协议
+## Deploy protocol v2 locally
 
-在全新本地 Anvil 测试时，在 `.env` 额外配置：
+For a fresh local Anvil deployment, add two public wallet addresses to `.env` (these are addresses, not private keys):
 
 ```dotenv
-ARBITER_ADDRESS=0x...   # 独立仲裁钱包地址，不是私钥
-TREASURY_ADDRESS=0x...  # 公共资金钱包地址，不是私钥
+ARBITER_ADDRESS=0x...   # independent arbiter
+TREASURY_ADDRESS=0x...  # public funds recipient
 ```
 
-部署脚本只有在两项都配置且角色分离时才启用协议 v2；角色配置一经链上确认不可修改。现有部署切换网络或地址会改变部署作用域，既有注册、质押和报告不会迁移。BOT 上的既有 v1 合约不会因更新代码或 README 自动升级。
+The deployment script enables v2 only when both addresses are configured and role separation checks pass. Arbitration roles are locked on-chain after configuration. Changing networks or deployment addresses does not migrate registrations, stake, or reports. The existing BOT v1 contract is not upgraded by changing local configuration or code.
 
-## 测试与验收
+## Tests and acceptance
 
 ```bash
-# 常规 Python 回归
+# Regular Python regression suite
 .venv/bin/python -m pytest -q -m 'not anvil'
 
-# 角色 HTTP、部署、交易核验及本地链集成
+# Role HTTP flows, deployment, transaction checks, and local-chain integration
 .venv/bin/python -m pytest tests/test_roles_e2e.py tests/test_ops_chain.py \
   tests/test_ops_transactions.py tests/test_ops_admin.py -q
 
-# 浏览器模块测试
+# Browser-module tests
 node --test tests/web/*.test.mjs
 
-# Solidity
+# Solidity contracts
 (cd contracts && forge test -vv)
 ```
 
-角色页面与 BOT 只读验收记录见 [docs/ROLE-PAGES-ACCEPTANCE.md](docs/ROLE-PAGES-ACCEPTANCE.md)。该记录注明了实际测试结果、历史部署版本与未覆盖的真实钱包扩展弹窗测试。
+See [role-page acceptance](docs/ROLE-PAGES-ACCEPTANCE.md) for recorded results, deployment-version boundaries, and wallet-extension checks that still require manual verification.
 
-## 安全边界与已知限制
+## Security and limitations
 
-- 演示样本是**惰性文本夹具**：源码里有触发规则的示例字符串，但不会读取真实凭据、联网或执行外部命令。
-- 规则扫描可能漏报，也可能误报；审计结果不是安全证明。
-- 审计结论由单个审计者提交。v1 没有独立仲裁；v2 有仲裁但仲裁判断仍可能出错。
-- 当前没有审计费，审计者质押不能取回；资金结算规则依合约协议版本而异。
-- Agent 只支持项目根内的本地来源；Git 远程拉取未实现。Agent 不执行上传的技能代码。
-- MCP 安装门禁依赖 Agent 按配置调用工具，不是操作系统或 Agent 平台强制安装钩子。
-- 网页服务端是本机信任边界，含本地配置与审计服务能力，只适合 loopback 演示和开发测试。
-- 当前 BOT 历史部署是 v1，README 不执行 BOT 部署、迁移或任何链上交易。
+- Demo skills are **inert text fixtures**. They contain strings that trigger audit rules, but do not read real credentials, access the network, or execute external commands.
+- Rule-based checks can miss malicious behavior or flag benign content. An audit is not proof of safety.
+- A single auditor submits each report. Protocol v1 has no independent arbitration; v2 adds a reviewer but cannot make that review infallible.
+- There is no audit fee, and auditor stake cannot currently be withdrawn. Settlement behavior depends on the contract protocol version.
+- Source resolution is local-only; fetching remote Git repositories is not implemented. The agent does not execute uploaded skill code.
+- The MCP install gate is an integration contract, not an OS- or agent-platform-enforced hook. An agent could copy files through another mechanism.
+- The role web service is part of the local trust boundary and may access local configuration and audit services. Use it only on loopback for development/demo.
+- The existing BOT deployment is v1. This README does not deploy, migrate, or send any BOT transactions.
 
-路线图见 [SPEC.md](SPEC.md) §11.3。v2 仲裁流程设计与验收过程见 [实施计划](docs/superpowers/plans/2026-10-08-independent-arbitration.md)。
+See [SPEC.md](SPEC.md) §11.3 for the roadmap and the [v2 arbitration implementation plan](docs/superpowers/plans/2026-10-08-independent-arbitration.md) for design and acceptance details.
 
-## 项目结构
+## Repository layout
 
-| 路径 | 说明 |
+| Path | Purpose |
 |---|---|
-| `contracts/` | Solidity Registry、ERC-721 License、Foundry 部署脚本与测试。 |
-| `auditor/` | 规则扫描、报告哈希、常驻 Agent、worker、运行记录与恢复。 |
-| `gate/` | Python 安装门禁与 MCP 安装服务器。 |
-| `ops/` | 本地 HTTP 应用、钱包认证、交易准备/核验、审计与仲裁服务。 |
-| `web/` | 多角色页面、只读看板与共享浏览器模块。 |
-| `rules/` | YAML 静态规则与包名清单。 |
-| `samples/` | 安全、恶意、待审计等演示技能夹具。 |
-| `tests/` | Python、Foundry、Node 与隔离 Anvil 回归测试。 |
-| `docs/` | 规格、验收记录、审计与仲裁说明。 |
+| `contracts/` | Solidity Registry, ERC-721 License, deployment scripts, and Foundry tests |
+| `auditor/` | Rule scanner, report hashing, resident agent, worker, journal, and recovery |
+| `gate/` | Python install gate and MCP installation server |
+| `ops/` | Local HTTP app, wallet authentication, transaction preparation/verification, audit and arbitration services |
+| `web/` | Role pages, read-only dashboard, and shared browser modules |
+| `rules/` | YAML rules and known package-name list |
+| `samples/` | Safe, malicious, and pending-audit inert fixtures |
+| `tests/` | Python, Foundry, Node, and isolated-Anvil regression tests |
+| `docs/` | Specifications, acceptance notes, audit and arbitration plans |
 
-## 许可证
+## License
 
-本项目采用 [MIT License](LICENSE)，与 Solidity 合约的 SPDX 标记一致。第三方依赖及其子模块仍分别适用各自的许可证；使用前请查看对应项目的许可声明。
+This project is licensed under the [MIT License](LICENSE), consistent with the Solidity SPDX headers. Third-party dependencies and submodules retain their own licenses; review their notices separately.
