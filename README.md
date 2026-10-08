@@ -264,4 +264,4 @@ node --test tests/web/*.test.mjs
 
 ## 许可证
 
-仓库当前没有根目录 `LICENSE` 文件。使用或再分发前，请联系维护者确认许可；Solidity 文件中的 SPDX 标记不等同于整个仓库的授权声明。
+本项目采用 [MIT License](LICENSE)，与 Solidity 合约的 SPDX 标记一致。第三方依赖及其子模块仍分别适用各自的许可证；使用前请查看对应项目的许可声明。
