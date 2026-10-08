@@ -17,7 +17,7 @@
 
 </div>
 
-> **部署状态说明**：当前 BOT Testnet（chain ID `968`）上的既有合约为 **协议 v1**。v2 独立仲裁合约与界面已实现，但没有迁移或替换现有 BOT 部署。请在签名前核对当前网络与 `deployments.json`。
+> **线上版本说明**：当前 BOT Testnet（chain ID `968`）上的合约，以及在线只读看板展示的数据，均为 **协议 v1**。仓库包含 v2 独立仲裁的合约代码与页面，但 v2 尚未部署到 BOT；线上看板不会显示 v2 仲裁案件，也不能据此认为线上押金已冻结或受仲裁保护。请在签名前核对当前网络与 `deployments.json`。
 
 ## 目录
 
@@ -26,8 +26,7 @@
 - [协议版本](#协议版本)
 - [功能](#功能)
 - [快速开始](#快速开始)
-- [GitHub Pages 静态看板](#github-pages-静态看板)
-- [Vercel 静态看板](#vercel-静态看板)
+- [在线只读看板](#在线只读看板)
 - [角色页面](#角色页面)
 - [测试](#测试)
 - [安全边界与已知限制](#安全边界与已知限制)
@@ -155,17 +154,9 @@ anvil
 DEMO_RPC_URL=http://127.0.0.1:8545 ./demo.sh --no-pause
 ```
 
-### Vercel 静态看板
+### 在线只读看板
 
-仓库根目录已包含 `vercel.json`。在 Vercel 导入此 GitHub 仓库，使用仓库根目录作为 Project Root，Framework Preset 选择 **Other**，不配置 Build Command 和 Output Directory，然后部署即可。入口页会重写到 `web/index.html`，部署地址会读取同一站点的 `deployments.json`。
-
-这只发布**只读链上看板**。Vercel 不会运行本机的 `ops.server`，也不提供发布、审计、仲裁或安装操作；角色操作台仍需按下方说明在本机启动。公开站点仅查询 `deployments.json` 指向的网络，更新页面代码不会迁移或更改链上合约。
-
-### GitHub Pages 静态看板
-
-仓库包含 `.github/workflows/pages.yml`。首次发布前，在 GitHub 仓库 **Settings → Pages → Build and deployment** 将 Source 设为 **GitHub Actions**。之后推送 `main` 会自动发布；也可在 **Actions → Deploy read-only dashboard to GitHub Pages → Run workflow** 手动触发。
-
-看板现已上线：<https://yishengsss.github.io/SkillGuard/>。工作流只复制 `web/index.html` 和 `deployments.json`，默认地址为 `https://<owner>.github.io/<repository>/`。`.env`、本机报告、安装目录、Python 后端及角色操作页面均不进入 Pages 产物。该站点只读 `deployments.json` 指定的 BOT Testnet v1 网络，不会部署、迁移或修改合约。
+[打开 SkillGuard 看板](https://yishengsss.github.io/SkillGuard/)。该页面仅读取 BOT Testnet（chain ID `968`）上的现有 v1 合约，不连接钱包、不发送交易。v2 仲裁功能尚未部署到 BOT；线上仍适用现有 v1 合约行为。
 
 ### 启动网页应用
 
