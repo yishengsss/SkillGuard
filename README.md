@@ -2,6 +2,8 @@
 
 # SkillGuard · 技能卫士
 
+[简体中文](README.md) · [English](README.en.md)
+
 ### 在安装前核验 AI Agent 技能，让审计过程与链上结论可追溯
 
 **技能版本注册 · 自动审计 Agent · MCP 安装门禁 · 独立仲裁与押金结算**
